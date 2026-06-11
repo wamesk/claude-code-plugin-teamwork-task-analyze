@@ -1,6 +1,5 @@
 ---
 name: teamwork-task-analyze
-version: 1.0.0
 description: "Use when the user provides a Teamwork.com URL (single task or tasklist) and asks to 'analyzuj task', 'priprav task', 'analyze teamwork task', 'rozpíš task', 'priprav AC a technický plán', or invokes '/teamwork-task-analyze'. Fetches the task via the Teamwork REST API v3 (name, description, attachments, comments, comment-attached files, subtasks) reusing the shared config/token from the `teamwork-task` plugin, deep-scans the current repository for related code/specs, then interactively rewrites the task description into the canonical WAME format: [optional preamble] → HR → Akceptačné kritériá → HR → Cieľ → HR → Technický popis (Claude Code Plan-Mode output). Pauses with AskUserQuestion for every clarifying question that arises and folds the answers back into the new description. Reviews subtasks (updates outdated ones, proposes splitting big tasks). Checks the time estimate using the WAME senior-engineer-with-Claude-Code methodology — sets one if missing, otherwise shows a highlighted warning with original vs proposed estimate and reasoning, never silently overwrites. Every write back to Teamwork is preceded by a preview and an explicit AskUserQuestion confirmation. For tasklist URLs reuses the `teamwork-task` filter — only tasks in column 'To Do' assigned to the current user are analysed for write; the rest are listed read-only. Read-only against the board (never moves it) and against time logs (never writes one)."
 argument-hint: "<teamwork-url> [--write-back=ask|auto|never] [--language=sk|en] [--max-questions=N] [--no-subtasks-review] [--no-estimate-check] [--include-completed]"
 allowed-tools: [Bash, Read, Write, Edit, Grep, Glob, AskUserQuestion]
@@ -58,8 +57,8 @@ Identical parser to the `teamwork-task` and `teamwork-task-test` plugins:
 ```bash
 URL="<the url>"
 WORKSPACE=$(echo "$URL"   | sed -nE 's|https?://([^.]+)\.teamwork\.com/.*|\1|p')
-ENTITY_ID=$(echo "$URL"   | sed -nE 's|.*/(tasks|tasklists)/([0-9]+).*|\2|p')
-URL_KIND=$(echo "$URL"    | sed -nE 's|.*/(tasks|tasklists)/[0-9]+.*|\1|p' | sed 's/s$//')
+ENTITY_ID=$(echo "$URL"   | sed -nE 's#.*/(tasks|tasklists)/([0-9]+).*#\2#p')
+URL_KIND=$(echo "$URL"    | sed -nE 's#.*/(tasks|tasklists)/[0-9]+.*#\1#p' | sed 's/s$//')
 BASE_URL="https://${WORKSPACE}.teamwork.com"
 ```
 
@@ -100,7 +99,7 @@ missing keys. Run on every invocation — `//=` is idempotent.
 ```bash
 jq '
   (.analyze_skill //= {}) |
-  (.analyze_skill.write_back_mode //= "ask_each") |
+  (.analyze_skill.write_back_mode //= "ask") |
   (.analyze_skill.description_format //= "wame_canonical") |
   (.analyze_skill.sections //= {
     "preamble_label": "",

@@ -4,6 +4,23 @@ All notable changes to the `teamwork-task-analyze` plugin are documented in
 this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-06-11
+
+### Fixed
+- **URL parser on BSD/macOS sed.** The `ENTITY_ID` / `URL_KIND` extraction in
+  Step 1 used `|` as the `sed` substitution delimiter, which collided with the
+  `(tasks|tasklists)` alternation and aborted with "parentheses not balanced"
+  on BSD sed — leaving both variables empty for every URL. Switched the
+  delimiter to `#` on both lines.
+- **`write_back_mode` default mismatch.** The persisted default
+  (`config.example.json` + the idempotent config merge in Step 2.5) was
+  `ask_each`, but the Step 9 dispatcher and the `--write-back` flag only
+  recognise `ask` / `auto` / `never`, so the default never matched any branch.
+  Reconciled the default to `ask` everywhere it is referenced.
+- Removed the `version:` field from the SKILL.md YAML frontmatter —
+  `.claude-plugin/plugin.json` is now the single source of truth for the
+  plugin version.
+
 ## [1.0.0] — 2026-06-04
 
 ### Added

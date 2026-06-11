@@ -7,7 +7,7 @@
   "default_language": "sk",
 
   "analyze_skill": {
-    "write_back_mode": "ask_each",
+    "write_back_mode": "ask",
     "description_format": "wame_canonical",
 
     "sections": {
