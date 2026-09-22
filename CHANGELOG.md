@@ -4,6 +4,61 @@ All notable changes to the `teamwork-task-analyze` plugin are documented in
 this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-09-22
+
+### Fixed
+- **The description parser deleted pasted screenshots.** Step 5 said "strip HTML to
+  plain markdown" and then allowed exactly three tags through — `<ul>`, `<li>` and
+  `<input type="checkbox">`. `<img>` was not on that list. A screenshot pasted into a
+  Teamwork description is stored **only** as an inline image in the description HTML
+  (`tw-inlineimages.s3-accelerate.amazonaws.com`); it is not an attachment and
+  `GET /tasks/{id}/files.json` returns nothing for it. So the parser dropped it before
+  Step 6 ever saw the content and Step 9.1 then PATCHed a description without it. This
+  is not hypothetical — a run over 18 tasks destroyed 25 screenshots, and they came back
+  only because the original text was still in a scratch file. `<img>`, `<a href>`,
+  existing `![…](…)` markdown and attachment references are now all carried through with
+  their URLs intact.
+- **The parser had no bucket for unrecognised sections.** The map had four buckets and
+  two rules for filling them, so anything under a heading the parser did not know
+  (`## Prílohy`, `## Screenshoty`, a bare image after the AC list) matched neither rule
+  and was silently lost. The "no recognised structure at all" fallback only saved the
+  case where there were no headings at all. There is now a `leftovers` bucket, a slot in
+  the draft template that renders it, and an assertion that every image, link and
+  attachment reference in the original turns up in one of the buckets.
+- **The approval gate could not show the loss.** Step 6.4 renders the first 80 lines of
+  the diff, and a screenshot pasted at the end of a long body is removed on a `-` line
+  far past that cut — so the human checkpoint showed a clean-looking preview of a
+  destructive rewrite. Every removed line that contains an image, a link or an
+  attachment reference is now listed in full above the diff, and the default answer
+  becomes `Edit`.
+- **Subtask rewrites had no preservation rule at all.** Step 7.1 runs subtasks through
+  the same parser and the same whole-field PATCH, but the rule was written only for the
+  parent task.
+- **Step 9.1 overwrote the description field unguarded**, with nothing anywhere stating
+  that the original had to be inside the new text. It now stops rather than writing when
+  the check fails.
+- **A downloaded attachment's local path could reach the description.** Step 3.3 saves
+  images to a temp directory and `attachments_cleanup: after_run` deletes it when the
+  run ends, so a path written into the task is a dead link before the user reads the
+  report. The path is for the analyst's own reasoning; anything written into the task
+  keeps the Teamwork URL.
+
+### Changed
+- **Two new rules, shared verbatim as the `wame-task-record-v1` block.**
+  1. *The estimate lives in the estimate field, and nowhere else.* Minutes never go
+     into a task title or description — not in the preamble, not in the technical
+     plan, not as a footer line. An estimate gets revised, and a number duplicated
+     into prose has to be changed in every copy; the copy somebody misses is the one
+     the next reader believes. Previews, confirmation gates, final reports and
+     companion documents may still show it — those are read once and thrown away.
+  2. *Never lose what the reporter wrote.* When an existing description is rewritten,
+     everything already there survives verbatim at the top: inline images, links, the
+     reporter's own wording, spelling and punctuation. No diacritics added, no grammar
+     fixed, no translation, no tidying.
+- The README's "What it does not do" list and the step that describes the rewrite both
+  said nothing about the original surviving. A reader — or a model pulling the README
+  for context — took the rewrite as a straight format replacement.
+
 ## [1.1.0] — 2026-09-22
 
 ### Fixed

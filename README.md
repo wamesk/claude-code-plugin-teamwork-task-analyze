@@ -49,7 +49,9 @@ Optional flags:
 4. **Asks** clarifying questions via `AskUserQuestion` (in batches of 4, up
    to 6 per run). Folds answers back into the new draft; preserves anything
    unresolved as `[OTVORENÉ]` markers in the relevant section.
-5. **Rewrites** the description into the canonical WAME format:
+5. **Rewrites** the description into the canonical WAME format — everything the
+   reporter already wrote is carried into the new text **verbatim** at the top,
+   inline screenshots and links included; the rewrite only adds sections below it:
    `[preamble] → HR → ## Akceptačné kritériá → HR → ## Cieľ → HR → ## Technický popis`
    where the technical plan is Claude Code Plan-Mode output (files, functions,
    DB schema, step-by-step, edge cases, tests to add).
@@ -71,6 +73,9 @@ PATCH subtask) is preceded by a preview and an explicit `AskUserQuestion`.
 - Never completes the task
 - Never runs `git commit` / `git push`
 - Never marks subtasks as done
+- Never loses anything from an existing description — the original text, its
+  inline images (a pasted screenshot lives only in the description body) and its
+  links are carried into the rewrite verbatim
 
 It is purely **read-only against the board and timesheet** — only the task
 description, estimate, and (with consent) subtasks are written.

@@ -1,6 +1,6 @@
 ---
 name: teamwork-task-analyze
-description: "Use when the user provides a Teamwork.com URL (single task or tasklist) and asks to 'analyzuj task', 'priprav task', 'analyze teamwork task', 'rozpíš task', 'priprav AC a technický plán', or invokes '/teamwork-task-analyze'. Fetches the task via the Teamwork REST API v3 (name, description, attachments, comments, comment-attached files, subtasks) reusing the shared config/token from the `teamwork-task` plugin, deep-scans the current repository for related code/specs, then interactively rewrites the task description into the canonical WAME format: [optional preamble] → HR → Akceptačné kritériá → HR → Cieľ → HR → Technický popis (Claude Code Plan-Mode output). Pauses with AskUserQuestion for every clarifying question that arises and folds the answers back into the new description. Reviews subtasks (updates outdated ones, proposes splitting big tasks). Checks the time estimate using the WAME estimate methodology `wame-estimate-v2` (one number per task against fixed outcome anchors, no speedup factor and no risk buffer) and writes it through the classic v1 endpoint, because the v3 PATCH answers 200 and ignores the field — sets one if missing, otherwise shows a highlighted warning with original vs proposed estimate and reasoning, never silently overwrites. Every write back to Teamwork is preceded by a preview and an explicit AskUserQuestion confirmation. For tasklist URLs reuses the `teamwork-task` filter — only tasks in column 'To Do' assigned to the current user are analysed for write; the rest are listed read-only. Read-only against the board (never moves it) and against time logs (never writes one)."
+description: "Use when the user provides a Teamwork.com URL (single task or tasklist) and asks to 'analyzuj task', 'priprav task', 'analyze teamwork task', 'rozpíš task', 'priprav AC a technický plán', or invokes '/teamwork-task-analyze'. Fetches the task via the Teamwork REST API v3 (name, description, attachments, comments, comment-attached files, subtasks) reusing the shared config/token from the `teamwork-task` plugin, deep-scans the current repository for related code/specs, then interactively rewrites the task description into the canonical WAME format — additively, keeping everything the reporter wrote verbatim at the top, inline screenshots and links included, and never putting the estimate into the description or the title: [optional preamble] → HR → Akceptačné kritériá → HR → Cieľ → HR → Technický popis (Claude Code Plan-Mode output). Pauses with AskUserQuestion for every clarifying question that arises and folds the answers back into the new description. Reviews subtasks (updates outdated ones, proposes splitting big tasks). Checks the time estimate using the WAME estimate methodology `wame-estimate-v2` (one number per task against fixed outcome anchors, no speedup factor and no risk buffer) and writes it through the classic v1 endpoint, because the v3 PATCH answers 200 and ignores the field — sets one if missing, otherwise shows a highlighted warning with original vs proposed estimate and reasoning, never silently overwrites. Every write back to Teamwork is preceded by a preview and an explicit AskUserQuestion confirmation. For tasklist URLs reuses the `teamwork-task` filter — only tasks in column 'To Do' assigned to the current user are analysed for write; the rest are listed read-only. Read-only against the board (never moves it) and against time logs (never writes one)."
 argument-hint: "<teamwork-url> [--write-back=ask|auto|never] [--language=sk|en] [--max-questions=N] [--no-subtasks-review] [--no-estimate-check] [--include-completed]"
 allowed-tools: [Bash, Read, Write, Edit, Grep, Glob, AskUserQuestion]
 ---
@@ -21,6 +21,13 @@ against time logs — the only things it ever writes back to Teamwork are the
 task description, the time estimate, and (when the user explicitly approves)
 new or updated subtask descriptions. Every write is gated by a preview and an
 `AskUserQuestion` confirmation.
+
+A rewrite here is **additive**. Whatever the reporter already wrote survives
+verbatim at the top of the new description — their wording, their spelling, their
+links, and their inline screenshots — and the canonical sections are appended
+below it. The skill never writes the estimate into the description or the title;
+that number lives in the Teamwork estimate field alone. Both rules are stated in
+full under **Task record rules** near the bottom of this document.
 
 ---
 
@@ -240,7 +247,7 @@ for comment-attached files). For each file:
 - Convert binary docs to plain text:
   - `.docx` / `.pdf` / `.xlsx` — use whichever converter is on `PATH` (`pandoc`, `pdftotext`, `python3 -m pdfminer.high_level`, etc.). If none is available → record `[SKIPPED: no converter]` and continue.
   - `.md` / `.txt` / `.csv` / `.json` / `.html` — read as-is.
-  - `.png` / `.jpg` / `.jpeg` — leave on disk and reference by path in the analysis (the LLM can view them).
+  - `.png` / `.jpg` / `.jpeg` — leave on disk and reference by path in the analysis (the LLM can view them). That local path is for **your own reasoning only**: `attachments_cleanup: after_run` deletes the directory when the run ends, so a path written into the description is a dead link before the user reads the report. Anything that goes into the task keeps the original Teamwork URL.
 
 When the run ends, honour `attachments_cleanup` (`after_run` → `rm -rf $TMPDIR/teamwork-task-analyze-<run-id>`).
 
@@ -321,18 +328,36 @@ edge cases, references to existing code.
 Parser rules:
 
 - Strip HTML to plain markdown first (Teamwork stores rich HTML). Preserve
-  `<ul>` / `<li>` / `<input type="checkbox">` as markdown bullets / checkboxes.
+  `<ul>` / `<li>` / `<input type="checkbox">` as markdown bullets / checkboxes,
+  **and every `<img src="…">` as `![alt](src)` — never drop it.** A screenshot
+  pasted into a Teamwork description is an *inline image*
+  (`https://tw-inlineimages.s3-accelerate.amazonaws.com/…`), not an attachment:
+  it is stored nowhere else in the task, so stripping the tag deletes the
+  screenshot. The same goes for `<a href>` links, `![…](…)` markdown images
+  already in the body, and any `[filename](…)` attachment reference — carry
+  every one of them through unchanged, URL included.
 - Detect known H2 headings case-insensitively, sk **and** en variants:
   - Acceptance: `Akceptačné kritériá`, `Akceptacne kriteria`, `Acceptance criteria`, `Acceptance Criteria`
   - Goal: `Cieľ`, `Ciel`, `Goal`, `Final summary`
   - Tech: `Technický popis`, `Technicky popis`, `Technical plan`, `Technical description`, `Implementation plan`
 - Detect HR markers: `<hr>`, `<hr/>`, `<hr />`, or markdown `---` / `***` / `___` on its own line.
-- Build a map `{ preamble, acceptance, goal, tech }`:
+- Build a map `{ preamble, acceptance, goal, tech, leftovers }`:
   - Text **before** the first recognised heading **and** before the first HR → `preamble`.
   - Text under each recognised heading → its section, stopping at the next HR or H2.
+  - Text under any **unrecognised** heading, and any block that belongs to no
+    section at all → `leftovers`, verbatim. This is where a screenshot pasted at
+    the bottom of the task lives; a bucket that Step 6 does not carry forward is
+    a bucket that deletes it.
   - If a section is missing, store an empty string for it (will be filled in Step 6).
+- **Nothing in the original description may be dropped by this parser.** Every
+  character of the original ends up in exactly one bucket. Before Step 6, assert
+  that every `![…](…)`, `<img …>` and `<a href=…>` found in the original appears
+  in one of them; if one does not, stop and report it instead of rewriting the
+  task.
 - If the description has **no recognised structure at all** (no headings, no HR),
   store the whole thing as `preamble` so that nothing is lost when we rewrite.
+  This is the **narrow fallback** for one shape, not the no-loss guarantee — that
+  is the unconditional rule stated above, and it applies to every shape.
 
 Output this internal `parsed` object for use in Step 6.
 
@@ -354,7 +379,7 @@ Inputs to your reasoning:
 Produce a **draft** new description with this exact structure:
 
 ```
-{preamble — preserved verbatim if it existed, otherwise omitted entirely (no empty preamble)}
+{preamble — copied verbatim if it existed, including every inline image (`![…](…)` / `<img …>`), link and attachment reference; otherwise omitted entirely (no empty preamble)}
 
 ---
 
@@ -405,6 +430,10 @@ Sections inside the technical plan:
 - Anything the analyst (you) could not answer with confidence — marked with
   the `[OTVORENÉ]` marker from config so the implementer treats them as
   blockers.
+
+{leftovers — every part of the original description that matched no section
+ (including screenshots and links pasted at the bottom), appended verbatim under
+ its original heading; omitted entirely when empty}
 ```
 
 Use `{acceptance_label}` / `{goal_label}` / `{tech_label}` from
@@ -448,13 +477,26 @@ not asked` line in the technical plan.
 
 If `parsed.preamble` is non-empty after trimming, place it **at the very top**,
 followed by the HR marker, then the three structured sections. Do **not**
-re-format the preamble — preserve line breaks, lists, links exactly.
+re-format the preamble — preserve line breaks, lists, links, inline images
+(`![…](…)` and `<img …>`, including the full `tw-inlineimages` URL) and
+attachment references exactly, character for character. Do not re-spell it, do
+not add or remove diacritics, do not translate it, do not "tidy" or normalise
+it: the reporter's own words are a record of what was asked for, and a rewritten
+record is a lost one. If `parsed.leftovers` is non-empty, append it verbatim
+after the technical section under its original heading — unrecognised is not the
+same as unwanted.
 
 ### Step 6.4 — Render the preview
 
 Render the new description as fenced markdown and show it to the user. Compute
 a unified diff against the original description (`diff -u <(printf '%s' "$old")
 <(printf '%s' "$new")`) and show the first 80 lines of it.
+
+The 80-line cap must never hide a removal. Above the diff, list **in full**
+every `-` line that contains an image (`![…](…)`, `<img …>`), a link or an
+attachment reference, however far down the description it sits. If that list is
+non-empty, the default answer is `Edit`, not `Apply` — a screenshot deleted from
+a Teamwork description cannot be recovered.
 
 Then via **AskUserQuestion** ask:
 
@@ -482,7 +524,9 @@ For each subtask returned in Step 3:
      subtask as `coherent`, no action.
    - If the subtask's scope is now narrower / wider / redirected by the new
      parent plan → draft an updated subtask description (same canonical
-     structure) and queue it as a write proposal.
+     structure) and queue it as a write proposal. Step 6.3 applies to subtasks
+     too: the subtask's own preamble, its inline images and its links are copied
+     into the new description verbatim — never dropped, never reformatted.
 4. When `review_existing == true` (default), present each proposed subtask
    update via **AskUserQuestion** (`Apply` / `Edit` / `Skip`).
 
@@ -527,6 +571,15 @@ speedup and a buffer. Round to the nearest `step_minutes` (15 by default). Cap a
 `max_task_minutes` (480), and propose a split above
 `subtasks.propose_split_threshold_minutes` (240).
 
+**The estimate lives in the Teamwork estimate field and nowhere else.** Never
+write the number of minutes or hours into the task **title** or into the task
+**description** — not as `**Odhad:** 120 min`, not in the preamble, not in the
+technical plan, not in a subtask name. The estimate gets revised; a number
+duplicated into prose has to be revised in two places, and the two will
+disagree. Show it in the preview and in the final report (Step 10), and write it
+through the estimate field — Step 9.2 for the task, `estimateMinutes` on a new
+subtask in Step 9.4 — that is the whole of its life.
+
 ### Step 8.1 — Compare with the existing estimate
 
 - If `task.estimateMinutes` is `0` or `null` → queue a "set estimate" proposal
@@ -558,6 +611,64 @@ speedup and a buffer. Round to the nearest `step_minutes` (15 by default). Cap a
     - `Keep original` — no change
     - `Custom value` — user types a number (validated as integer multiple of
       `step_minutes`)
+
+---
+
+## Task record rules
+
+> Block version `wame-task-record-v1`. Shared **verbatim** across the plugins that write a Teamwork
+> task — `teamwork-task-analyze`, `teamwork-tasks-from-desk`, `teamwork-tasks-from-session` and
+> `teamwork-tasks-from-dnr`. Change it in all of them or in none.
+
+### The estimate lives in the estimate field, and nowhere else
+
+Never write minutes or hours into a task's **title** or **description**. Not in the preamble, not
+inside the technical plan, not as a footer line under it.
+
+The reason is maintenance, not taste. An estimate gets revised — after the first hour of work, after
+a clarifying answer comes back, after the task is split into subtasks. A number that also sits in
+prose has to be found and changed in every copy it was written to, and the copy somebody misses is
+the one the next reader believes. One field, one number, nothing to reconcile.
+
+This binds every surface that writes a task:
+
+- the description body, including any `**Odhad:** … min` or `**Estimate:** … min` line
+- the task title, including a `(120 min)` or `· 2h` suffix
+- the description column of a generated import file
+- a subtask's title and description, on the same terms as the parent
+
+Where the estimate belongs instead: the API estimate field — `estimateMinutes` on a v3 read,
+`estimatedMinutes` on a v3 create, `estimated-minutes` on the classic v1 update.
+
+Where it is still fine to show: the terminal preview, the confirmation gate, the final report, and
+any companion document that is not the task itself — a Desk internal note, a Markdown plan sitting
+next to an XLSX. Those are read once and thrown away. The task record is not.
+
+### Never lose what the reporter wrote
+
+When this skill rewrites an **existing** task description, everything already there survives
+**verbatim** at the top, above the first `---`.
+
+- **Inline images.** A screenshot pasted into a Teamwork description is ordinary Markdown:
+  `![image.png](https://tw-inlineimages.s3-accelerate.amazonaws.com/…)`. It is **not** a separate
+  attachment, and Teamwork shows it **nowhere else** — `GET /projects/api/v3/tasks/{id}/files.json`
+  returns nothing for it. Dropping that link deletes the screenshot from the task. This is not
+  hypothetical: one run stripped the image links out of 18 descriptions on the assumption that
+  Teamwork rendered them separately, and destroyed 25 screenshots. They came back only because the
+  original text happened to still be in a scratch file.
+- **The reporter's own wording, spelling and punctuation.** Do not add diacritics, do not fix
+  grammar, do not translate, do not tighten, do not re-order. A bug report is the record of what
+  somebody saw and how they described it. A tidied version is no longer that record, and the tester
+  cannot recognise their own report in it.
+- **Links, lists, line breaks, and any HTML that is already there.** Pass the block through
+  untouched.
+
+Before writing, read the current description. After composing the new one, check that the old text
+still occurs inside it character for character. When it does not, you are about to delete somebody's
+work — stop and ask the user instead of writing.
+
+Attachments and comments are separate records and this skill never touches them. If a change would
+need one removed, that is a question for the user, not a step in the plan.
 
 ---
 
@@ -659,6 +770,14 @@ Queued proposal kinds and their API calls:
 
 ### 9.1 PATCH task description
 
+This is a **full replacement** — Teamwork keeps no copy of the previous
+description, and an inline image removed here is gone from the task for good.
+Before sending, compare `$NEW_DESC` against the original one last time and
+**abort this write** if any inline image, link or attachment reference present in
+the original is missing from `$NEW_DESC`. Record it as
+`❌ refused: would drop <n> image(s)/link(s)` in the final report and continue
+with the remaining proposals.
+
 ```bash
 PAYLOAD=$(jq -n --arg desc "$NEW_DESC" '{task:{description:$desc}}')
 curl -sS -u "$AUTH" -H "Content-Type: application/json" -H "Accept: application/json" \
@@ -746,6 +865,9 @@ Project: <projectName>
 ### Description rewrite
 - Status: ✅ applied / ⏭ skipped / ❌ failed
 - Preamble preserved: yes / no
+- Inline images carried over: <n>/<n> · links <n>/<n> · attachment refs <n>/<n>
+  (each pair must be equal — a mismatch means the rewrite deleted something the
+  reporter put into the task)
 - New sections: AC (<n> items), Goal (<n> sentences), Technical plan (<n> lines)
 - Clarifying questions asked: <n> (answered <n>, unresolved <n>)
 
