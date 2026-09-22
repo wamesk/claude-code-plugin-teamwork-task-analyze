@@ -4,6 +4,52 @@ All notable changes to the `teamwork-task-analyze` plugin are documented in
 this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-09-22
+
+### Fixed
+- **The estimate write never actually worked.** Step 9.2 sent
+  `PATCH /projects/api/v3/tasks/{id}.json` with `{"task":{"estimateMinutes":N}}`.
+  Teamwork answers **HTTP 200 and ignores the field** — the task still reads
+  `estimateMinutes: 0` afterwards. Every run since 1.0.0 therefore reported the
+  estimate as applied and changed nothing. The estimate now goes through the
+  classic v1 endpoint, `PUT /tasks/{id}.json` with
+  `{"todo-item":{"estimated-minutes":N}}`, and the skill reads the value back
+  before reporting success — a 200 on this endpoint proves nothing either.
+  Descriptions and subtask creation stay on v3, where they do work.
+
+### Changed
+- **Estimate methodology replaced — `wame-estimate-v2`.** The old rule produced a
+  "traditional" estimate, cut it by 30–50 % for Claude Code, then added a 15–30 %
+  buffer on top. Two percentages stacked on a guess give a 0.58×–0.91× band on
+  every task, so the same work could legitimately be quoted at 60 or at 95
+  minutes and the wider end always won the argument. The methodology now
+  estimates **one number directly** against a table of finished-outcome anchors.
+  The anchors are tighter (a single figure each, adjust by at most one 15-minute
+  step) and the block states explicitly what the number covers — reproduce,
+  implement, test, run the suite, self-review, one review round — and what it
+  never covers: deployment, production data fixes, client communication, and any
+  work behind an unanswered `[OTVORENÉ]` question.
+- **Uncertainty is now an open question, not a surcharge.** Where the old text
+  told you to pad for "unknown unknowns", the new one tells you to write the
+  question into the task, estimate the investigation that answers it, and state
+  what the fix costs under each answer.
+- **The 240-minute split threshold is now named as the working ceiling**, so it
+  no longer contradicts the 480-minute hard cap sitting in the same paragraph.
+- The methodology block is byte-identical across `teamwork-task-analyze`,
+  `teamwork-tasks-from-dnr`, `teamwork-tasks-from-desk`,
+  `teamwork-tasks-from-session` and `dnr-business`, and now carries a version
+  marker so a drifted copy is visible.
+- Step 8's divergence report no longer asks for "the speedup % applied and the
+  buffer % applied" in its reasoning — there are none. It asks which anchor the
+  work sits on, why it moves off that anchor, and what the number excludes.
+
+### Removed
+- Config keys `estimate.buffer_pct_min`, `estimate.buffer_pct_max`,
+  `estimate.speedup_pct_min` and `estimate.speedup_pct_max`. The config
+  migration deletes them from files written by earlier versions and renames
+  `methodology` from `wame_senior_claude_code` to `wame_estimate_v2` — a stale
+  `buffer_pct_max` left in the file reads like a rule somebody still follows.
+
 ## [1.0.1] — 2026-06-11
 
 ### Fixed

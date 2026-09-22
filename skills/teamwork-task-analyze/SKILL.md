@@ -1,6 +1,6 @@
 ---
 name: teamwork-task-analyze
-description: "Use when the user provides a Teamwork.com URL (single task or tasklist) and asks to 'analyzuj task', 'priprav task', 'analyze teamwork task', 'rozpíš task', 'priprav AC a technický plán', or invokes '/teamwork-task-analyze'. Fetches the task via the Teamwork REST API v3 (name, description, attachments, comments, comment-attached files, subtasks) reusing the shared config/token from the `teamwork-task` plugin, deep-scans the current repository for related code/specs, then interactively rewrites the task description into the canonical WAME format: [optional preamble] → HR → Akceptačné kritériá → HR → Cieľ → HR → Technický popis (Claude Code Plan-Mode output). Pauses with AskUserQuestion for every clarifying question that arises and folds the answers back into the new description. Reviews subtasks (updates outdated ones, proposes splitting big tasks). Checks the time estimate using the WAME senior-engineer-with-Claude-Code methodology — sets one if missing, otherwise shows a highlighted warning with original vs proposed estimate and reasoning, never silently overwrites. Every write back to Teamwork is preceded by a preview and an explicit AskUserQuestion confirmation. For tasklist URLs reuses the `teamwork-task` filter — only tasks in column 'To Do' assigned to the current user are analysed for write; the rest are listed read-only. Read-only against the board (never moves it) and against time logs (never writes one)."
+description: "Use when the user provides a Teamwork.com URL (single task or tasklist) and asks to 'analyzuj task', 'priprav task', 'analyze teamwork task', 'rozpíš task', 'priprav AC a technický plán', or invokes '/teamwork-task-analyze'. Fetches the task via the Teamwork REST API v3 (name, description, attachments, comments, comment-attached files, subtasks) reusing the shared config/token from the `teamwork-task` plugin, deep-scans the current repository for related code/specs, then interactively rewrites the task description into the canonical WAME format: [optional preamble] → HR → Akceptačné kritériá → HR → Cieľ → HR → Technický popis (Claude Code Plan-Mode output). Pauses with AskUserQuestion for every clarifying question that arises and folds the answers back into the new description. Reviews subtasks (updates outdated ones, proposes splitting big tasks). Checks the time estimate using the WAME estimate methodology `wame-estimate-v2` (one number per task against fixed outcome anchors, no speedup factor and no risk buffer) and writes it through the classic v1 endpoint, because the v3 PATCH answers 200 and ignores the field — sets one if missing, otherwise shows a highlighted warning with original vs proposed estimate and reasoning, never silently overwrites. Every write back to Teamwork is preceded by a preview and an explicit AskUserQuestion confirmation. For tasklist URLs reuses the `teamwork-task` filter — only tasks in column 'To Do' assigned to the current user are analysed for write; the rest are listed read-only. Read-only against the board (never moves it) and against time logs (never writes one)."
 argument-hint: "<teamwork-url> [--write-back=ask|auto|never] [--language=sk|en] [--max-questions=N] [--no-subtasks-review] [--no-estimate-check] [--include-completed]"
 allowed-tools: [Bash, Read, Write, Edit, Grep, Glob, AskUserQuestion]
 ---
@@ -112,16 +112,16 @@ jq '
     "hr_marker": "---"
   }) |
   (.analyze_skill.estimate //= {
-    "methodology": "wame_senior_claude_code",
+    "methodology": "wame_estimate_v2",
     "set_if_missing": true,
     "warn_on_divergence_minutes": 60,
-    "buffer_pct_min": 15,
-    "buffer_pct_max": 30,
-    "speedup_pct_min": 30,
-    "speedup_pct_max": 50,
     "step_minutes": 15,
     "max_task_minutes": 480
   }) |
+  (.analyze_skill.estimate |= del(.buffer_pct_min, .buffer_pct_max,
+                                  .speedup_pct_min, .speedup_pct_max)) |
+  (if .analyze_skill.estimate.methodology == "wame_senior_claude_code"
+   then .analyze_skill.estimate.methodology = "wame_estimate_v2" else . end) |
   (.analyze_skill.subtasks //= {
     "review_existing": true,
     "propose_split_threshold_minutes": 240,
@@ -521,8 +521,11 @@ small tasks live happily as a single line item.
 
 Skip entirely when `--no-estimate-check` was passed.
 
-Compute your own estimate **using the WAME methodology below**. Round to the
-nearest `step_minutes` (15 by default). Cap at `max_task_minutes` (480).
+Compute your own estimate **using the WAME methodology below**. That means one
+number picked against the anchors — not a traditional estimate multiplied by a
+speedup and a buffer. Round to the nearest `step_minutes` (15 by default). Cap at
+`max_task_minutes` (480), and propose a split above
+`subtasks.propose_split_threshold_minutes` (240).
 
 ### Step 8.1 — Compare with the existing estimate
 
@@ -544,8 +547,10 @@ nearest `step_minutes` (15 by default). Cap at `max_task_minutes` (480).
         Delta:     <delta>m
 
         Reasoning:
-        <2–4 short lines explaining the calibration anchors that drove the
-         estimate, the speedup % applied, and the buffer % applied.>
+        <2–4 short lines: which anchor this work sits on, why it moves off
+         that anchor (at most one 15-minute step), and what the number
+         deliberately excludes. Never cite a speedup or buffer percentage —
+         v2 has none.>
     ```
 
     Then via **AskUserQuestion**:
@@ -558,39 +563,82 @@ nearest `step_minutes` (15 by default). Cap at `max_task_minutes` (480).
 
 ## WAME estimate methodology
 
-We estimate as senior engineers using Claude Code as a force multiplier.
+> Block version `wame-estimate-v2`. Shared **verbatim** across the plugins
+> `teamwork-task-analyze`, `teamwork-tasks-from-dnr`, `teamwork-tasks-from-desk`,
+> `teamwork-tasks-from-session` and `dnr-business`. Change it in all five or in
+> none — a per-plugin variant is how two skills start quoting different numbers
+> for the same task.
 
-Baseline assumptions:
-- Engineer is senior in the stack of the current repo
-- Claude Code handles boilerplate / scaffolding / repetitive edits
-- Test scaffolding (Pest/PHPUnit/Vitest/Playwright) is mostly LLM-generated
-- Code review and QA are done by the same engineer (no separate review cycle)
+**Estimate one number, directly.** Do not produce a "traditional" estimate and
+then multiply it by a speedup and a buffer. Two percentages stacked on a guess
+open a band almost twice as wide as the guess itself, and in a negotiation the
+widest end of that band always wins. Name the minutes the work takes and defend
+that number.
 
-Speedup vs traditional estimate: ~30–50% faster than a hand-written estimate
-without Claude Code. Apply that reduction first.
+**Who does the work.** A senior engineer who already knows this codebase,
+directing Claude Code. Claude Code writes the implementation and the tests; the
+engineer decides, reviews and runs the suite. There is no separate QA pass and
+no handover to a second person.
 
-Buffer policy: after the reduction, add 15–30% buffer for:
-- unknown unknowns (undocumented API, hidden coupling)
-- environment friction (failing CI, flaky local setup)
-- review feedback that costs more than one cycle
+**What the number covers**
 
-The final number must:
-- be a multiple of 15 minutes
-- be at least 15 minutes for trivial tasks (rename, copy edit)
-- be at most 8 hours (480 min) per single task — bigger tasks must be split
+- Reading the relevant code and reproducing the reported behaviour
+- The implementation itself
+- Writing or extending the test, and running the affected tests
+- Self-review and the fixes it produces
+- One round of review feedback
 
-Calibration anchors (use as sanity check, not as a lookup table):
-- Single-model CRUD endpoint + Pest test: 60–120 min
-- New Vue component wired to existing API: 60–120 min
-- New module in `wamesk/*` (model + migration + controller + tests): 240–360 min
-- DB schema migration with data backfill: 180–300 min
-- Bugfix from reproducible repro: 60–180 min
-- Bugfix without repro / investigation: 120–360 min
+**What the number never covers** — estimate each of these as its own task instead
+of folding it in
 
-Why this matters: legacy estimates were ~2× too high and made us
-non-competitive. Reducing them manually was the workaround. This methodology
-encodes the same judgement so estimates are aggressive (we beat them in
-practice) yet still include enough buffer to survive surprises.
+- Deployment, running the migration on production, fixing production data
+- Talking to the client or the PO, and waiting for the answer
+- Any work that sits behind an unanswered `[OTVORENÉ]` question
+- Anything the task itself declares out of scope
+
+**Shape of the number**
+
+- A multiple of 15 minutes. Never below 15.
+- Above 240 minutes: propose a split into 2–6 atomic subtasks. That threshold is
+  `propose_split_threshold_minutes` and it is the real ceiling in daily use.
+- 480 minutes is a hard cap. Work that will not fit under it is not a task yet.
+
+**Anchors.** These are finished outcomes, not categories of feeling. Pick the
+closest line and move by at most one 15-minute step. If the number you want is
+more than one step away from every anchor, write down in the reasoning what makes
+this case different — that sentence is what a reviewer checks.
+
+| Finished work | Minutes |
+|---|---|
+| Text, label, translation key or config value, plus the test that guards it | 15 |
+| One field, filter or validation rule on one screen, plus a test | 30 |
+| Bug with a stack trace or a one-line repro: fix plus regression test | 60 |
+| Vue/React component wired to an API that already exists, plus a test | 90 |
+| Bug that reproduces but spans 2–3 layers: fix plus tests | 120 |
+| One CRUD endpoint or one screen end to end, plus tests | 120 |
+| Bug with no repro yet: investigate, then fix | 180 |
+| Schema migration with a data backfill and a copy-back assertion | 180 |
+| New module in `wamesk/*` (model, migration, Nova screen, policy, tests) | 300 |
+
+**Uncertainty is an open question, not a surcharge.** When you cannot size the
+work, you have found something the task does not say yet. Write that question
+into the task, estimate the investigation that answers it, and state in the
+reasoning what the fix costs under each likely answer. A number with a written
+assumption survives review. A number padded for "unknown unknowns" does not, and
+it hides the question that was worth asking.
+
+**Do not pad a task because it is labelled TBD**, and do not shrink a real
+multi-layer bug so the list looks cheap. Both errors cost the same trust.
+
+**Why this replaced the old rule.** Hand-written estimates used to run about
+twice the real cost, which lost us work we should have won. The first fix was a
+30–50 % speedup factor with a 15–30 % buffer on top — but that chain put the
+padding straight back while sounding rigorous, and it produced a 0.58×–0.91×
+band on every single task. The anchors above carry the same judgement as one
+number. The measured feedback loop is the `teamwork-tasks-from-session` plugin,
+which shows the methodology estimate and the real logged session time side by
+side. When those two drift apart on the same kind of work, change the anchors
+here — never re-introduce a buffer percentage.
 
 ---
 
@@ -619,15 +667,33 @@ curl -sS -u "$AUTH" -H "Content-Type: application/json" -H "Accept: application/
   "${BASE}/projects/api/v3/tasks/${TASK_ID}.json"
 ```
 
-### 9.2 PATCH task estimate
+### 9.2 PUT task estimate (classic v1 endpoint — **not** v3)
+
+> **Do not PATCH the estimate through v3.** `PATCH /projects/api/v3/tasks/{id}.json`
+> with `{"task":{"estimateMinutes":N}}` answers **HTTP 200 and ignores the
+> field** — the task still reads `estimateMinutes: 0` afterwards. A skill that
+> uses it reports success and changes nothing, which is worse than failing. The
+> estimate is the one field in this skill that must go through the classic v1
+> endpoint. (Descriptions and subtask creation are fine on v3 — see 9.1, 9.3, 9.4.)
 
 ```bash
-PAYLOAD=$(jq -n --arg m "$NEW_ESTIMATE_MIN" '{task:{estimateMinutes:($m|tonumber)}}')
+PAYLOAD=$(jq -n --arg m "$NEW_ESTIMATE_MIN" \
+  '{"todo-item":{"estimated-minutes":($m|tonumber)}}')
 curl -sS -u "$AUTH" -H "Content-Type: application/json" -H "Accept: application/json" \
-  -X PATCH \
+  -X PUT \
   -d "$PAYLOAD" \
-  "${BASE}/projects/api/v3/tasks/${TASK_ID}.json"
+  "${BASE}/tasks/${TASK_ID}.json"
 ```
+
+Read the value back before reporting success — a 200 here proves nothing either:
+
+```bash
+curl -sS -u "$AUTH" -H "Accept: application/json" \
+  "${BASE}/projects/api/v3/tasks/${TASK_ID}.json" | jq '.task.estimateMinutes'
+```
+
+If the read-back does not match `$NEW_ESTIMATE_MIN`, record the proposal as
+`❌ failed: estimate not persisted` in the final report and continue.
 
 ### 9.3 PATCH an existing subtask description
 

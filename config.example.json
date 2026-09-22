@@ -3,13 +3,10 @@
     "base_url": "https://<workspace>.teamwork.com",
     "api_token": ""
   },
-
   "default_language": "sk",
-
   "analyze_skill": {
     "write_back_mode": "ask",
     "description_format": "wame_canonical",
-
     "sections": {
       "preamble_label": "",
       "acceptance_label_sk": "Akceptačné kritériá",
@@ -20,41 +17,45 @@
       "tech_label_en": "Technical plan",
       "hr_marker": "---"
     },
-
     "estimate": {
-      "methodology": "wame_senior_claude_code",
+      "methodology": "wame_estimate_v2",
       "set_if_missing": true,
       "warn_on_divergence_minutes": 60,
-      "buffer_pct_min": 15,
-      "buffer_pct_max": 30,
-      "speedup_pct_min": 30,
-      "speedup_pct_max": 50,
       "step_minutes": 15,
       "max_task_minutes": 480
     },
-
     "subtasks": {
       "review_existing": true,
       "propose_split_threshold_minutes": 240,
       "min_split_subtasks": 2,
       "max_split_subtasks": 6
     },
-
     "clarifying_questions": {
       "max_per_run": 6,
       "fold_into_description": true,
       "leave_unresolved_as_open_marker": "[OTVORENÉ]"
     },
-
     "fetch_attachments": true,
     "fetch_comment_files": true,
     "max_attachment_size_mb": 25,
     "attachment_extensions_allow": [
-      "md", "txt", "pdf", "docx", "xlsx", "csv", "json", "html", "eml", "msg", "sql", "png", "jpg", "jpeg"
+      "md",
+      "txt",
+      "pdf",
+      "docx",
+      "xlsx",
+      "csv",
+      "json",
+      "html",
+      "eml",
+      "msg",
+      "sql",
+      "png",
+      "jpg",
+      "jpeg"
     ],
     "attachments_cleanup": "after_run"
   },
-
   "tasklist_filter": {
     "enabled": true,
     "todo_stage": "To Do",
@@ -63,20 +64,57 @@
     "analyze_all_tasks": true,
     "skip_reason_render": "inline"
   },
-
   "subtasks": {
     "enabled": true,
     "max_depth": 2,
     "include_parent_context": true
   },
-
   "local_context_discovery": {
     "enabled": true,
     "max_depth": 3,
-    "scan_dirs": [".", "docs", "specs", "samples", "Strečnianska"],
-    "extensions": ["docx", "pdf", "md", "txt", "eml", "msg", "csv", "xlsx", "sql", "json", "html"],
-    "filename_hints": ["vzor", "sample", "dnr", "specifikác", "otazky", "q&a", "podklad", "priloh", "attachment"],
-    "ignore_globs": [".git/**", "vendor/**", "node_modules/**", "storage/**", ".claude/**", "public/**", "bootstrap/cache/**", ".idea/**", ".vscode/**", "teamwork-task-*/**"],
+    "scan_dirs": [
+      ".",
+      "docs",
+      "specs",
+      "samples",
+      "Strečnianska"
+    ],
+    "extensions": [
+      "docx",
+      "pdf",
+      "md",
+      "txt",
+      "eml",
+      "msg",
+      "csv",
+      "xlsx",
+      "sql",
+      "json",
+      "html"
+    ],
+    "filename_hints": [
+      "vzor",
+      "sample",
+      "dnr",
+      "specifikác",
+      "otazky",
+      "q&a",
+      "podklad",
+      "priloh",
+      "attachment"
+    ],
+    "ignore_globs": [
+      ".git/**",
+      "vendor/**",
+      "node_modules/**",
+      "storage/**",
+      ".claude/**",
+      "public/**",
+      "bootstrap/cache/**",
+      ".idea/**",
+      ".vscode/**",
+      "teamwork-task-*/**"
+    ],
     "min_keyword_score": 1,
     "max_files_to_offer": 12
   }
