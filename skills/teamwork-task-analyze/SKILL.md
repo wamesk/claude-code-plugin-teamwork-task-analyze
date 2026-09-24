@@ -1,6 +1,6 @@
 ---
 name: teamwork-task-analyze
-description: "Use when the user provides a Teamwork.com URL (single task or tasklist) and asks to 'analyzuj task', 'priprav task', 'analyze teamwork task', 'rozpíš task', 'priprav AC a technický plán', or invokes '/teamwork-task-analyze'. Fetches the task via the Teamwork REST API v3 (name, description, attachments, comments, comment-attached files, subtasks) reusing the shared config/token from the `teamwork-task` plugin, deep-scans the current repository for related code/specs, then interactively rewrites the task description into the canonical WAME format — additively, keeping everything the reporter wrote verbatim at the top, inline screenshots and links included, and never putting the estimate into the description or the title: [optional preamble] → HR → Akceptačné kritériá → HR → Cieľ → HR → Technický popis (Claude Code Plan-Mode output). Pauses with AskUserQuestion for every clarifying question that arises and folds the answers back into the new description. Reviews subtasks (updates outdated ones, proposes splitting big tasks). Checks the time estimate using the WAME estimate methodology `wame-estimate-v2` (one number per task against fixed outcome anchors, no speedup factor and no risk buffer) and writes it through the classic v1 endpoint, because the v3 PATCH answers 200 and ignores the field — sets one if missing, otherwise shows a highlighted warning with original vs proposed estimate and reasoning, never silently overwrites. Every write back to Teamwork is preceded by a preview and an explicit AskUserQuestion confirmation. For tasklist URLs reuses the `teamwork-task` filter — only tasks in column 'To Do' assigned to the current user are analysed for write; the rest are listed read-only. Read-only against the board (never moves it) and against time logs (never writes one)."
+description: "Use when the user provides a Teamwork.com URL (single task or tasklist) and asks to 'analyzuj task', 'priprav task', 'analyze teamwork task', 'rozpíš task', 'priprav AC a technický plán', or invokes '/teamwork-task-analyze'. Fetches the task via the Teamwork REST API v3 (name, description, attachments, comments, comment-attached files, subtasks) reusing the shared config/token from the `teamwork-task` plugin, deep-scans the current repository for related code/specs, then interactively rewrites the task description into the canonical WAME format — additively, keeping everything the reporter wrote verbatim at the top, inline screenshots and links included, and never putting the estimate into the description or the title: [optional preamble] → HR → Akceptačné kritériá → HR → Cieľ → HR → Technický popis (Claude Code Plan-Mode output). Pauses with AskUserQuestion for every clarifying question that arises and folds the answers back into the new description. Adds the cross-cutting acceptance criteria that apply — menu entry and inbound links for a new screen, authorization for a new action, data volume for a new list — the same UI/UX, performance, security and reachability dimensions teamwork-task-test verifies. The technical plan also names the framework versions the repository actually has installed and the idiomatic feature to use for the task (plan only, never an acceptance criterion). Reviews subtasks (updates outdated ones, proposes splitting big tasks). Checks the time estimate using the WAME estimate methodology `wame-estimate-v2` (one number per task against fixed outcome anchors, no speedup factor and no risk buffer) and writes it through the classic v1 endpoint, because the v3 PATCH answers 200 and ignores the field — sets one if missing, otherwise shows a highlighted warning with original vs proposed estimate and reasoning, never silently overwrites. Every write back to Teamwork is preceded by a preview and an explicit AskUserQuestion confirmation. For tasklist URLs reuses the `teamwork-task` filter — only tasks in a configured start column (default 'Ready for Development' or 'To Do') assigned to the current user are analysed for write; tasks off the board and the rest are listed read-only. Read-only against the board (never moves it) and against time logs (never writes one)."
 argument-hint: "<teamwork-url> [--write-back=ask|auto|never] [--language=sk|en] [--max-questions=N] [--no-subtasks-review] [--no-estimate-check] [--include-completed]"
 allowed-tools: [Bash, Read, Write, Edit, Grep, Glob, AskUserQuestion]
 ---
@@ -28,6 +28,46 @@ links, and their inline screenshots — and the canonical sections are appended
 below it. The skill never writes the estimate into the description or the title;
 that number lives in the Teamwork estimate field alone. Both rules are stated in
 full under **Task record rules** near the bottom of this document.
+
+The rewritten acceptance criteria also carry the **cross-cutting requirements**
+that apply to the task — the menu entry and the inbound links for a new screen,
+the authorization of a new action, the expected data volume of a new list —
+the same four dimensions (`ui_ux`, `performance`, `security`, `reachability`)
+that `teamwork-task-test` reviews at QA time in its Step 6.6 (see Step 6.0
+below). The fifth key, `framework`, lives in the **technical plan only**: it
+names the framework versions the repository actually has installed and the
+idiomatic feature of that version to use for this task. It never becomes an
+acceptance criterion — `teamwork-task-test` treats `framework` as advisory, so
+such a criterion could never be ticked.
+
+---
+
+## Shell portability contract
+
+Every `bash` block in this file runs in the user's login shell — **zsh on
+macOS** (Claude Code's Bash tool is `/bin/zsh`), bash elsewhere — and every
+Bash tool call is a fresh shell, so no function or variable survives from one
+snippet to the next. Keep each snippet valid in both shells:
+
+- **Never pass JSON through `echo`.** zsh's builtin `echo` expands `\n`, `\t`
+  and `\\` inside the JSON into raw control characters and `jq` rejects the
+  result. Use `jq … <<<"$JSON"` or `printf '%s\n' "$JSON" | jq …`. The same
+  goes for description or comment text piped into `grep`, `sed`, `diff` or
+  `python3`. (`echo "$URL" | sed` is harmless — a URL has no backslashes.)
+- **Check the HTTP status of every GET** (`curl -w '\n%{http_code}'`) and
+  print a `⚠` naming the endpoint on a non-200 or a parse error, then continue
+  with an explicit, reported fallback. **Never** `2>/dev/null || echo 0` after
+  a parse — that is how a failed request turns into a silent "0 comments".
+- **No word splitting in zsh:** `for X in $VAR` iterates once. Iterate lines
+  with `while IFS= read -r X; do …; done <<<"$VAR"`.
+- `[ "$a" = "$b" ]` with a single `=` (`==` fails in zsh); no `${!ARR[@]}` or
+  `${!name}`; no numeric array subscripts (zsh is 1-based) — use `${ARR[@]:$i:1}`.
+- **An unmatched glob is a hard error in zsh** and aborts the whole command
+  list. Quote URLs and paths; use `find … -name` instead of a bare glob that may
+  match nothing.
+- Quote any word that starts with `=` (zsh expands `=word` to a command path).
+- Tool calls share no functions: repeat the inline status check in each
+  snippet rather than defining a helper in one call and using it in another.
 
 ---
 
@@ -118,6 +158,14 @@ jq '
     "tech_label_en": "Technical plan",
     "hr_marker": "---"
   }) |
+  # --- 1.3.0: cross-cutting labels (Step 6.0). Per-key defaults, because the
+  #     whole-object `//=` above never touches a `sections` object that exists.
+  #     The quality label enumerates all five keys, `framework` included; it is
+  #     new in 1.3.0, so no released config carries an older value to migrate.
+  (.analyze_skill.sections.cross_cutting_label_sk //= "Prierezové požiadavky") |
+  (.analyze_skill.sections.cross_cutting_label_en //= "Cross-cutting requirements") |
+  (.analyze_skill.sections.quality_label_sk //= "Kvalita (UI/UX, výkon, bezpečnosť, dostupnosť, framework)") |
+  (.analyze_skill.sections.quality_label_en //= "Quality (UI/UX, performance, security, reachability, framework)") |
   (.analyze_skill.estimate //= {
     "methodology": "wame_estimate_v2",
     "set_if_missing": true,
@@ -140,8 +188,10 @@ jq '
     "fold_into_description": true,
     "leave_unresolved_as_open_marker": "[OTVORENÉ]"
   }) |
-  (.analyze_skill.fetch_attachments //= true) |
-  (.analyze_skill.fetch_comment_files //= true) |
+  # Booleans: `//=` would also replace a deliberate `false`, so a user could
+  # never switch attachment downloads off — default them only when null.
+  (.analyze_skill.fetch_attachments |= if . == null then true else . end) |
+  (.analyze_skill.fetch_comment_files |= if . == null then true else . end) |
   (.analyze_skill.max_attachment_size_mb //= 25) |
   (.analyze_skill.attachment_extensions_allow //= [
     "md","txt","pdf","docx","xlsx","csv","json","html","eml","msg","sql","png","jpg","jpeg"
@@ -149,17 +199,40 @@ jq '
   (.analyze_skill.attachments_cleanup //= "after_run") |
   (.tasklist_filter //= {
     "enabled": true,
-    "todo_stage": "To Do",
+    "todo_stages": ["Ready for Development", "To Do"],
     "todo_stage_match_mode": "case_sensitive",
     "only_assigned_to_me": true,
     "analyze_all_tasks": true,
     "skip_reason_render": "inline"
-  })
+  }) |
+  # --- 1.3.0: start columns — the SAME rule as teamwork-task 1.5.0 Step 2.6,
+  #     because both plugins write this shared key. `todo_stages` is written
+  #     once, only when absent (or null) — an existing list is never
+  #     overwritten: the default pair when the legacy `todo_stage` is missing,
+  #     empty or the old default "To Do"; `[<legacy>]` when it was customised.
+  #     The legacy key stays. `board_workflow` is not touched here — this
+  #     skill never moves a card, and teamwork-task owns that key.
+  (if (.tasklist_filter | type) == "object" and .tasklist_filter.todo_stages == null
+   then .tasklist_filter.todo_stages =
+          (.tasklist_filter.todo_stage as $legacy
+           | if ($legacy | type) == "string" and $legacy != "" and $legacy != "To Do"
+             then [$legacy]
+             else ["Ready for Development", "To Do"] end)
+   else . end)
 ' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
 chmod 600 "$CONFIG_FILE"
 ```
 
 CLI flags override `.analyze_skill.*` values for the duration of this run.
+
+**Shared keys (1.3.0).** `tasklist_filter` is shared with `teamwork-task`, and
+both plugins may run first against the same file, so this merge only **adds**
+what is missing and applies exactly the rule `teamwork-task` 1.5.0 applies —
+the file ends in the same state whichever plugin runs first, and a value the
+user chose is never rewritten. For the user's config shape
+`{"todo_stage": "To Do", …}` that means `todo_stages` becomes
+`["Ready for Development", "To Do"]`; `{"todo_stage": "Backlog"}` becomes
+`["Backlog"]`; a fresh file gets the default pair.
 
 ---
 
@@ -173,66 +246,298 @@ BASE=$(jq  -r '.teamwork.base_url'  "$CONFIG_FILE")
 AUTH="${TOKEN}:xxx"
 ```
 
+Every GET below checks its HTTP status inline and parses the body with a
+here-string — see the **Shell portability contract** at the top. Tool calls do
+not share shell functions, so the check is repeated in each snippet. Variables
+do not survive between calls either: run the three credential lines above (and
+set `ENTITY_ID`) in the **same** Bash call as each snippet; the Step 3.2 filter
+snippet also needs `PROJECT_ID` and `TASKS_FILE`, so run it together with the
+tasklist snippet. In tasklist mode the Step 3.1 comments and subtasks snippets
+run once per task, with `ENTITY_ID` set to that task's id.
+
 ### Step 3.1 — Single task (`URL_KIND=task`)
 
 ```bash
-curl -sS -u "$AUTH" -H "Accept: application/json" \
-  "${BASE}/projects/api/v3/tasks/${ENTITY_ID}.json?include=projects,tasklists,assignees,subtasks"
+# --- Step 3.1: task ----------------------------------------------------------
+URL="${BASE}/projects/api/v3/tasks/${ENTITY_ID}.json?include=projects,tasklists,attachments"
+RESP=$(curl -sS -u "$AUTH" -H "Accept: application/json" -w '\n%{http_code}' "$URL")
+HTTP=${RESP##*$'\n'}; BODY=${RESP%$'\n'*}
+if [ "$HTTP" != "200" ]; then
+  echo "⚠ GET $URL → HTTP $HTTP: $(jq -r '.errors[0].detail // .message // empty' <<<"$BODY" 2>/dev/null)" >&2
+fi
+# v3 task objects carry NO top-level `projectId` (and no `commentsCount`, no
+# `hasSubtasks`) — the project id lives on the embedded tasklist reference.
+PROJECT_ID=$(jq -r '.task.projectId // .task.tasklist.meta.projectId // empty' <<<"$BODY")
+PROJECT_NAME=$(jq -r --arg p "$PROJECT_ID" '.included.projects[$p].name // empty' <<<"$BODY")
+TASKLIST_ID=$(jq -r '.task.tasklistId // empty' <<<"$BODY")
+# Task-level attachments: `.task.attachments` holds {id, type:"files"} refs and
+# `include=attachments` resolves them into `.included.files` (the separate
+# `/tasks/{id}/attachments.json` endpoint answers 404).
+jq -r '.included.files // {} | to_entries[] | .value
+       | [.id, .originalName, .size, .downloadURL] | @tsv' <<<"$BODY" > "/tmp/tw_analyze_files_${ENTITY_ID}.tsv"
+echo "task ${ENTITY_ID}: project ${PROJECT_ID:-⚠ unknown} (${PROJECT_NAME:-?}), tasklist ${TASKLIST_ID:-?}, $(wc -l < "/tmp/tw_analyze_files_${ENTITY_ID}.tsv" | tr -d ' ') attachment(s)"
 ```
 
-Extract from `.task`:
-- `id, name, description, projectId, tasklistId, estimateMinutes, priority, status, dueAt, commentsCount, parentTaskId, assigneeUserIds, hasSubtasks`
+Extract from `.task` — these are the keys v3 actually returns:
+- `id, name, description, tasklistId, estimateMinutes, priority, status, dueDate, parentTaskId, assigneeUserIds, tagIds, workflowStages, attachments`
+- **`projectId` = `.projectId // .tasklist.meta.projectId`.** v3 has no
+  top-level `projectId` (it reads `null`); the value sits on the embedded
+  tasklist reference. The project name comes from `.included.projects["<id>"].name`.
+  Both feed the final report (Step 10) — the project link there is built from
+  this id.
+- There is **no `commentsCount`** and **no `hasSubtasks`** — nothing may be
+  gated on either. The comments and subtasks fetches below answer those
+  questions directly.
 
-If `commentsCount > 0`, fetch comments:
+**Always fetch the comments** (v1.3.0: no count gate — v3 never returns
+`commentsCount`, so a `commentsCount > 0` gate never opened, and the reporter's
+clarifications in the comments are half the input to Step 6). Chronological
+order matters because the latest comment usually wins:
+`orderBy=date&orderMode=asc` (`orderBy=postedAt` is rejected with HTTP 400
+*"orderBy: unknown comment sort."*).
 
 ```bash
-curl -sS -u "$AUTH" -H "Accept: application/json" \
-  "${BASE}/projects/api/v3/tasks/${ENTITY_ID}/comments.json?pageSize=100&page=1&orderBy=postedAt&orderMode=asc"
+# --- Step 3.1: comments (v3, v1 fallback) ------------------------------------
+# One comment per line, oldest first, normalised to the v3 field names:
+# {id, postedDateTime, postedByUserId, author, htmlBody, files}.
+COMMENTS_FILE="/tmp/tw_analyze_comments_${ENTITY_ID}.jsonl"; : > "$COMMENTS_FILE"
+COMMENTS_SRC=v3; PAGE=1
+while :; do
+  URL="${BASE}/projects/api/v3/tasks/${ENTITY_ID}/comments.json?pageSize=100&page=${PAGE}&orderBy=date&orderMode=asc&include=users"
+  RESP=$(curl -sS -u "$AUTH" -H "Accept: application/json" -w '\n%{http_code}' "$URL")
+  HTTP=${RESP##*$'\n'}; BODY=${RESP%$'\n'*}
+  if [ "$HTTP" != "200" ] || ! jq -c '(.included.users // {}) as $u | .comments[]
+        | {id, postedDateTime, postedByUserId,
+           author: (($u[(.postedByUserId|tostring)] // {}) | [.firstName, .lastName] | map(select(. != null and . != "")) | join(" ")),
+           htmlBody, files: (.files // [])}' <<<"$BODY" >> "$COMMENTS_FILE"; then
+    echo "⚠ GET $URL → HTTP $HTTP: $(jq -r '.errors[0].detail // .message // empty' <<<"$BODY" 2>/dev/null) — falling back to the v1 comments endpoint" >&2
+    COMMENTS_SRC=v1; break
+  fi
+  [ "$(jq -r '.meta.page.hasMore // false' <<<"$BODY")" = "true" ] || break
+  PAGE=$((PAGE + 1))
+done
+
+if [ "$COMMENTS_SRC" = "v1" ]; then
+  # v1 → v3 field map: datetime → postedDateTime · html-body (plain: body) →
+  # htmlBody · author-id → postedByUserId · author-firstname/-lastname → author ·
+  # attachments → files. v1 server order is unspecified — sort by datetime.
+  # Page until an EMPTY page: v1 may cap pageSize below the 100 requested, so a
+  # short page does not prove it was the last one.
+  : > "$COMMENTS_FILE"; PAGE=1
+  while :; do
+    URL="${BASE}/tasks/${ENTITY_ID}/comments.json?page=${PAGE}&pageSize=100"
+    RESP=$(curl -sS -u "$AUTH" -H "Accept: application/json" -w '\n%{http_code}' "$URL")
+    HTTP=${RESP##*$'\n'}; BODY=${RESP%$'\n'*}
+    N=$(jq -r '.comments | length' <<<"$BODY" 2>/dev/null)
+    if [ "$HTTP" != "200" ] || [ -z "$N" ] || ! jq -c '.comments[]
+        | {id: (.id|tonumber? // .), postedDateTime: .datetime, postedByUserId: (."author-id"|tonumber? // .),
+           author: ([."author-firstname", ."author-lastname"] | map(select(. != null and . != "")) | join(" ")),
+           htmlBody: (."html-body" // .body), files: (.attachments // [])}' <<<"$BODY" >> "$COMMENTS_FILE"; then
+      echo "⚠ GET $URL → HTTP $HTTP — comments UNAVAILABLE for task ${ENTITY_ID}; report them as unavailable, never as \"no comments\"" >&2
+      COMMENTS_SRC=unavailable; : > "$COMMENTS_FILE"; break
+    fi
+    [ "$N" -eq 0 ] && break
+    PAGE=$((PAGE + 1))
+  done
+  [ "$COMMENTS_SRC" = "v1" ] && jq -sc 'sort_by(.postedDateTime)[]' "$COMMENTS_FILE" > "$COMMENTS_FILE.tmp" && mv "$COMMENTS_FILE.tmp" "$COMMENTS_FILE"
+fi
+if [ "$COMMENTS_SRC" = "unavailable" ]; then
+  echo "task ${ENTITY_ID}: comments UNAVAILABLE"
+else
+  echo "task ${ENTITY_ID}: $(wc -l < "$COMMENTS_FILE" | tr -d ' ') comment(s) via ${COMMENTS_SRC}"
+fi
 ```
 
-Per-comment fields of interest: `htmlBody, postedAt, author, files[]` (the
-files array holds attachments uploaded with the comment).
+| Datum | v3 comment | v1 comment |
+| --- | --- | --- |
+| time | `postedDateTime` (there is **no** `postedAt`) | `datetime` |
+| HTML body | `htmlBody` | `html-body` (plain: `body`) |
+| author | `postedByUserId` (id only; names via `include=users` → `.included.users`) | `author-id`, `author-firstname`, `author-lastname` |
+| files | `files[]` — attachments uploaded with the comment | `attachments[]` |
 
-Always fetch task-level attachments (separate from comment files):
+Resolve a comment file reference to its metadata (`originalName`, `size`,
+`downloadURL`) with `GET /projects/api/v3/files/{id}.json` → `.file`, using the
+same inline status check. `COMMENTS_SRC=unavailable` is a different result from
+an empty file: Step 6 and the final report say *"comments unavailable (HTTP …)"*,
+never *"no comments"* — the two read the same otherwise, and only one of them is
+true.
+
+Fetch subtasks (one-shot, recursion via `parentTaskId` chain happens in Step 7),
+with the same inline status check. The fallback, when the `/subtasks.json`
+endpoint is unavailable on the workspace, is the task list filtered by
+`parentTaskId` (singular). `parentTaskIds` is silently **ignored** by v3, which
+then returns unrelated tasks from the whole site, so both results are also
+filtered on `.parentTaskId` before anything counts as a subtask:
 
 ```bash
-curl -sS -u "$AUTH" -H "Accept: application/json" \
-  "${BASE}/projects/api/v3/tasks/${ENTITY_ID}/attachments.json?pageSize=100&page=1"
+# --- Step 3.1: subtasks (v3 subtasks endpoint, filtered task list fallback) --
+SUBTASKS_FILE="/tmp/tw_analyze_subtasks_${ENTITY_ID}.jsonl"; : > "$SUBTASKS_FILE"
+SUBTASKS_SRC=unavailable
+for URL in "${BASE}/projects/api/v3/tasks/${ENTITY_ID}/subtasks.json?pageSize=100&page=1" \
+           "${BASE}/projects/api/v3/tasks.json?parentTaskId=${ENTITY_ID}&pageSize=100&page=1"; do
+  RESP=$(curl -sS -u "$AUTH" -H "Accept: application/json" -w '\n%{http_code}' "$URL")
+  HTTP=${RESP##*$'\n'}; BODY=${RESP%$'\n'*}
+  if [ "$HTTP" = "200" ] && jq -c --argjson p "$ENTITY_ID" '.tasks[] | select(.parentTaskId == $p)' \
+       <<<"$BODY" > "$SUBTASKS_FILE"; then
+    SUBTASKS_SRC=ok
+    [ "$(jq -r '.meta.page.hasMore // false' <<<"$BODY")" = "true" ] \
+      && echo "⚠ GET $URL → more than 100 subtasks; only the first 100 are reviewed" >&2
+    break
+  fi
+  echo "⚠ GET $URL → HTTP $HTTP: $(jq -r '.errors[0].detail // .message // empty' <<<"$BODY" 2>/dev/null)" >&2
+  : > "$SUBTASKS_FILE"
+done
+if [ "$SUBTASKS_SRC" = "unavailable" ]; then
+  echo "task ${ENTITY_ID}: subtasks UNAVAILABLE"
+else
+  echo "task ${ENTITY_ID}: $(wc -l < "$SUBTASKS_FILE" | tr -d ' ') open subtask(s)"
+fi
 ```
 
-Fetch subtasks (one-shot, recursion via `parentTaskId` chain happens in Step 7):
-
-```bash
-curl -sS -u "$AUTH" -H "Accept: application/json" \
-  "${BASE}/projects/api/v3/tasks/${ENTITY_ID}/subtasks.json?pageSize=100&page=1&include=cards,stages"
-```
-
-Fallback if the `/subtasks.json` endpoint is unavailable on the workspace:
-
-```bash
-curl -sS -u "$AUTH" -H "Accept: application/json" \
-  "${BASE}/projects/api/v3/tasks.json?parentTaskIds=${ENTITY_ID}&pageSize=100&page=1"
-```
+Both endpoints list open subtasks only (completed ones need
+`includeCompletedTasks=true`). If both fail (`SUBTASKS_SRC=unavailable`), the
+subtask review (Step 7) reports *"subtasks unavailable"* and does **not** treat
+the task as having none — Step 7.2 would otherwise propose splitting a task that
+already is split.
 
 ### Step 3.2 — Tasklist (`URL_KIND=tasklist`)
 
 ```bash
-curl -sS -u "$AUTH" -H "Accept: application/json" \
-  "${BASE}/projects/api/v3/tasklists/${ENTITY_ID}.json"
+# --- Step 3.2: tasklist ------------------------------------------------------
+URL="${BASE}/projects/api/v3/tasklists/${ENTITY_ID}.json"
+RESP=$(curl -sS -u "$AUTH" -H "Accept: application/json" -w '\n%{http_code}' "$URL")
+HTTP=${RESP##*$'\n'}; BODY=${RESP%$'\n'*}
+if [ "$HTTP" != "200" ]; then
+  echo "⚠ GET $URL → HTTP $HTTP: $(jq -r '.errors[0].detail // .message // empty' <<<"$BODY" 2>/dev/null)" >&2
+fi
+PROJECT_ID=$(jq -r '.tasklist.projectId // empty' <<<"$BODY")
 
-curl -sS -u "$AUTH" -H "Accept: application/json" \
-  "${BASE}/projects/api/v3/tasklists/${ENTITY_ID}/tasks.json?pageSize=100&page=1&include=cards,stages"
+# One task per line (compact JSON) so later snippets can read it without echo.
+TASKS_FILE="/tmp/tw_analyze_tasks_${ENTITY_ID}.jsonl"; : > "$TASKS_FILE"
+PAGE=1
+while :; do
+  URL="${BASE}/projects/api/v3/tasklists/${ENTITY_ID}/tasks.json?pageSize=100&page=${PAGE}"
+  RESP=$(curl -sS -u "$AUTH" -H "Accept: application/json" -w '\n%{http_code}' "$URL")
+  HTTP=${RESP##*$'\n'}; BODY=${RESP%$'\n'*}
+  if [ "$HTTP" != "200" ] || ! jq -c '.tasks[]' <<<"$BODY" >> "$TASKS_FILE"; then
+    echo "⚠ GET $URL → HTTP $HTTP: $(jq -r '.errors[0].detail // .message // empty' <<<"$BODY" 2>/dev/null) — the task list is INCOMPLETE from page ${PAGE} on" >&2
+    break
+  fi
+  [ "$(jq -r '.meta.page.hasMore // false' <<<"$BODY")" = "true" ] || break
+  PAGE=$((PAGE + 1))
+done
+# The tasklist GET failed or carried no project id → take it from the tasks
+# themselves (v3 task objects: `.tasklist.meta.projectId`; no `projectId` key).
+if [ -z "$PROJECT_ID" ] && [ -s "$TASKS_FILE" ]; then
+  PROJECT_ID=$(jq -rs '[.[] | .projectId // .tasklist.meta.projectId // empty][0] // empty' "$TASKS_FILE")
+  [ -n "$PROJECT_ID" ] && echo "ℹ project id ${PROJECT_ID} taken from the tasks (tasklist GET gave none)" >&2
+fi
+echo "tasklist ${ENTITY_ID}: $(wc -l < "$TASKS_FILE" | tr -d ' ') task(s), project ${PROJECT_ID:-⚠ unknown}"
 ```
 
-Paginate while `.meta.page.hasMore == true`.
+A tasklist item has the same shape as a single task — take each task's own
+project id from `.projectId // .tasklist.meta.projectId`, as in Step 3.1.
 
-**Apply the `tasklist_filter` from config** — same logic as `teamwork-task` v1.4.0:
+**Apply the `tasklist_filter` from config** — same rules as `teamwork-task` v1.5.0:
 
-- If `.tasklist_filter.enabled == true`:
-  - Resolve `me.id` from `GET /projects/api/v3/me.json`.
-  - For each task look up its board column from `.task.cardId` → `included.cards[cardId].stageId` → `included.stages[stageId].name`.
-  - Tasks matching **both** `stage_name == "To Do"` (case-sensitive per config) **AND** `me.id ∈ task.assigneeUserIds` are marked `eligible_for_writeback = true`.
-  - All other tasks are still fetched and **analysed read-only** (so the user can sanity-check teammates' work) — they appear in the final report with a `📋 read-only (not in To Do or not assigned to me)` badge and are **never** PATCHed.
+- Unless `.tasklist_filter.enabled` is `false` (a missing key counts as
+  `true` — the same reading as `teamwork-task`):
+  - Resolve `me.id` from `GET /projects/api/v3/me.json` → `.person.id`.
+  - Resolve each task's board column from its **workflow stage**:
+    `.workflowStages[0].stageId` → the stage name from the project's workflows.
+    (Up to 1.2.0 this step read `.cardId` → `included.cards` → `included.stages`
+    from `?include=cards,stages`. On the live API `cardId` is `null` and that
+    `included` comes back empty, so every task resolved to "no column" and was
+    silently listed read-only.)
+  - **Start columns** *(1.3.0)* — a task is in a start column when its stage
+    name equals **any** entry of `.tasklist_filter.todo_stages` (default
+    `["Ready for Development", "To Do"]` — the two start columns of the WAME
+    board, workflow "WAME workflow"; an older per-project board has only
+    `To Do`, which still matches). The list order is display priority only.
+    The legacy string `.tasklist_filter.todo_stage` is still read when
+    `todo_stages` is absent or empty. `todo_stage_match_mode` (default
+    `case_sensitive`) applies to each column name: `to do` or `TO DO` does not
+    match `To Do` unless the mode is `case_insensitive`.
+  - Tasks matching **both** a start column **AND** `me.id ∈ task.assigneeUserIds`
+    (the assignee half only when `only_assigned_to_me` is not `false`) are
+    marked `eligible_for_writeback = true`.
+  - All other tasks are still fetched and **analysed read-only** (so the user can sanity-check teammates' work) — they appear in the final report with a `📋 read-only (<reason>)` badge and are **never** PATCHed.
+  - A task that is **not on the board** (`workflowStages` empty, or `stageId`
+    `0`) is never eligible — only the configured start columns are. It is
+    listed read-only with the reason *"not on the board"* rather than an empty
+    stage. A task that **is** on a board whose column name could not be
+    resolved (the workflows GET failed, or the project id is unknown) is
+    listed read-only as *"column unresolved"* — fail closed, never a guess.
+
+```bash
+# --- Step 3.2: tasklist filter (board column + assignee) ---------------------
+# stageId (string) → stage name; `.included.stages` is an object keyed by id
+# (tolerate an array too). An empty PROJECT_ID would make `projectIds=` answer
+# 200 with the whole workspace's workflows — never ask without one.
+STAGES='{}'
+if [ -z "$PROJECT_ID" ]; then
+  echo "⚠ project id unknown — board columns UNKNOWN; every task on a board is listed read-only (column unresolved)" >&2
+else
+  URL="${BASE}/projects/api/v3/workflows.json?projectIds=${PROJECT_ID}&include=stages"
+  RESP=$(curl -sS -u "$AUTH" -H "Accept: application/json" -w '\n%{http_code}' "$URL")
+  HTTP=${RESP##*$'\n'}; BODY=${RESP%$'\n'*}
+  if [ "$HTTP" != "200" ] || ! STAGES=$(jq -c '.included.stages // {}
+        | if type == "array" then map({key: (.id|tostring), value: .name}) | from_entries
+          else map_values(.name) end' <<<"$BODY"); then
+    echo "⚠ GET $URL → HTTP $HTTP — board columns UNKNOWN; every task on a board is listed read-only (column unresolved)" >&2
+    STAGES='{}'
+  fi
+fi
+
+URL="${BASE}/projects/api/v3/me.json"
+RESP=$(curl -sS -u "$AUTH" -H "Accept: application/json" -w '\n%{http_code}' "$URL")
+HTTP=${RESP##*$'\n'}; BODY=${RESP%$'\n'*}
+ME_ID=$(jq -r '.person.id // empty' <<<"$BODY" 2>/dev/null)
+[ -n "$ME_ID" ] || echo "⚠ GET $URL → HTTP $HTTP — current user UNKNOWN; every task is listed read-only and the report says why" >&2
+
+# Start columns: `todo_stages` (array; absent or empty → the legacy string
+# `todo_stage`), else the default pair — the same reading as teamwork-task. A
+# string written where the list belongs counts as a one-column list.
+# `// true` would turn an explicit `false` into true — so test for `false`.
+START_STAGES=$(jq -c '.tasklist_filter as $f
+  | ($f.todo_stages | if type == "string" then [.] elif type == "array" then . else [] end
+     | map(select(type == "string" and length > 0))) as $list
+  | if ($list | length) > 0 then $list
+    elif ($f.todo_stage | type) == "string" and $f.todo_stage != "" then [$f.todo_stage]
+    else ["Ready for Development", "To Do"] end' "$CONFIG_FILE")
+MATCH_MODE=$(jq -r '.tasklist_filter.todo_stage_match_mode // "case_sensitive"' "$CONFIG_FILE")
+ONLY_MINE=$(jq -r 'if .tasklist_filter.only_assigned_to_me == false then "false" else "true" end' "$CONFIG_FILE")
+
+# taskId <TAB> stage ("-" = not on the board, "?<id>" = column unresolved)
+#        <TAB> assignee ids ("-" = none) <TAB> "eligible" | "read_only:<reasons>"
+jq -r --argjson st "$STAGES" --argjson start "$START_STAGES" --arg mode "$MATCH_MODE" \
+      --arg me "$ME_ID" --arg mine "$ONLY_MINE" '
+  def key: if $mode == "case_insensitive" then ascii_downcase else . end;
+  (((.workflowStages // [])[0].stageId // 0) | tostring) as $sid
+  | (if $sid == "0" then "-" else ($st[$sid] // ("?" + $sid)) end) as $stage
+  | ((.assigneeUserIds // []) | map(tostring)) as $who
+  | [ (if $stage == "-" then "no_card"
+       elif ($stage | startswith("?")) then "stage_unresolved(\($sid))"
+       elif any($start[]; key == ($stage | key)) then empty
+       else "wrong_stage(\($stage))" end),
+      (if $mine != "true" then empty
+       elif $me == "" then "me_unknown"
+       elif any($who[]; . == $me) then empty
+       else "wrong_assignee" end)
+    ] as $why
+  | [ .id, $stage, (if $who == [] then "-" else ($who | join(",")) end),
+      (if $why == [] then "eligible" else "read_only:" + ($why | join("+")) end) ] | @tsv' \
+  "$TASKS_FILE" > "/tmp/tw_analyze_stages_${ENTITY_ID}.tsv"
+echo "start columns ${START_STAGES} (${MATCH_MODE}): $(awk -F '\t' '$4 == "eligible" { e++ } $4 != "eligible" { r++ }
+  END { print e+0 " eligible, " r+0 " read-only" }' "/tmp/tw_analyze_stages_${ENTITY_ID}.tsv")"
+```
+
+The fourth column decides `eligible_for_writeback`. The reason codes are the
+ones `teamwork-task`'s Step 3.45 uses, and they render in the report as:
+`no_card` → *"not on the board"*, `stage_unresolved(<id>)` → *"column
+unresolved"*, `wrong_stage(<stage>)` → *"column <stage> is not a start column"*,
+`wrong_assignee` → *"not assigned to me"*, `me_unknown` → *"current user
+unknown"* (analysis-only here: without a known user nothing is written back).
 
 - By default skip tasks where `status == "completed"` unless `--include-completed` was passed.
 
@@ -243,18 +548,29 @@ for comment-attached files). For each file:
 
 - Skip if `size_mb > max_attachment_size_mb` (default 25); record `[SKIPPED: too large]` in the analysis log.
 - Skip if extension not in `attachment_extensions_allow`.
-- Download via the `downloadURL` field from the file metadata (`curl -sS -u "$AUTH" -L -o "$TMPDIR/<safe-name>"`).
+- Take the metadata (`originalName`, `size` in bytes, `downloadURL`) from
+  `/tmp/tw_analyze_files_<taskId>.tsv` (Step 3.1, `include=attachments`) for task
+  files, and from `GET /projects/api/v3/files/{id}.json` → `.file` for a comment's
+  `files[]` reference.
+- Download via the `downloadURL` field from the file metadata (`curl -sS -u "$AUTH" -L -o "$TMPDIR/<safe-name>"`, path quoted).
 - Convert binary docs to plain text:
   - `.docx` / `.pdf` / `.xlsx` — use whichever converter is on `PATH` (`pandoc`, `pdftotext`, `python3 -m pdfminer.high_level`, etc.). If none is available → record `[SKIPPED: no converter]` and continue.
   - `.md` / `.txt` / `.csv` / `.json` / `.html` — read as-is.
   - `.png` / `.jpg` / `.jpeg` — leave on disk and reference by path in the analysis (the LLM can view them). That local path is for **your own reasoning only**: `attachments_cleanup: after_run` deletes the directory when the run ends, so a path written into the description is a dead link before the user reads the report. Anything that goes into the task keeps the original Teamwork URL.
 
-When the run ends, honour `attachments_cleanup` (`after_run` → `rm -rf $TMPDIR/teamwork-task-analyze-<run-id>`).
+When the run ends, honour `attachments_cleanup` (`after_run` → `rm -rf "$TMPDIR/teamwork-task-analyze-<run-id>"`, and the Step 3 scratch files with `find /tmp -maxdepth 1 -name 'tw_analyze_*_<id>.*' -delete` — not a bare `/tmp/tw_analyze_*` glob, which is a hard error in zsh when nothing matches).
 
 ### Step 3.4 — HTTP error handling
 
+Every snippet in Step 3 captures the status with `-w '\n%{http_code}'` and prints
+a `⚠` naming the endpoint — a failed request must never look like an empty
+result.
+
 - HTTP 401 → token invalid; re-prompt the user (re-run Step 2's first-run flow).
-- HTTP 403/404 → report and stop with the URL that failed.
+- HTTP 403/404 on the **task or tasklist itself** → report and stop with the URL that failed.
+- HTTP 4xx/5xx on a **secondary** fetch (comments, subtasks, workflows, a comment
+  file) → follow that snippet's stated fallback, and carry the gap into the final
+  report as *"unavailable"*, never as *"none"*.
 - Network error → retry once with a 2s backoff, then stop.
 
 ---
@@ -297,6 +613,75 @@ Always run a project-shape sniff regardless of file matches:
 
 The detected stack (Laravel/Vue/Ionic/Nuxt/etc.) goes into the Technical
 section of the rewritten description (Step 6).
+
+**Installed framework versions (the `framework` plan line, Step 6.0).** When the
+skill runs inside the project's repository, read the versions it actually has
+installed — from the lock files, never from memory, because a model's idea of
+"the current Laravel" is stale by design. With Laravel Boost installed
+(`laravel/boost`), its `application-info` tool gives them directly. Run once per
+run and reuse the result for every task:
+
+```bash
+# --- Step 4: installed framework versions ------------------------------------
+# PHP side: resolved versions from composer.lock (else vendor/composer/installed.json),
+# the PHP floor from composer.json. A package repo without either prints its
+# composer.json constraints and says that they are constraints.
+PHP_PKGS='^(laravel/(framework|nova|boost)|livewire/livewire|inertiajs/inertia-laravel|pestphp/pest|phpunit/phpunit)$'
+if [ -f composer.lock ]; then
+  jq -r --arg re "$PHP_PKGS" '.packages[]?, ."packages-dev"[]? | select(.name | test($re))
+                              | "\(.name) \(.version)"' composer.lock
+elif [ -f vendor/composer/installed.json ]; then
+  jq -r --arg re "$PHP_PKGS" '(.packages? // .)[] | select(.name | test($re))
+                              | "\(.name) \(.version)"' vendor/composer/installed.json
+elif [ -f composer.json ]; then
+  jq -r --arg re "$PHP_PKGS" '(.require // {}) + (."require-dev" // {}) | to_entries[]
+                              | select(.key | test($re))
+                              | "\(.key) \(.value) (constraint only, not installed)"' composer.json
+fi
+if [ -f composer.json ]; then
+  jq -r '"php " + ((.config.platform.php // .require.php // "?") | tostring)' composer.json
+fi
+
+# JS side: the version installed in node_modules (works for npm, pnpm and yarn),
+# else the one resolved in package-lock.json; without either print the
+# package.json constraint and say that it is one.
+if [ -f package.json ]; then
+  while IFS= read -r P; do
+    [ -z "$P" ] && continue
+    V=""
+    if [ -f "node_modules/$P/package.json" ]; then
+      V=$(jq -r '.version // empty' "node_modules/$P/package.json")
+    elif [ -f package-lock.json ]; then
+      V=$(jq -r --arg p "$P" '.packages["node_modules/" + $p].version // .dependencies[$p].version // empty' package-lock.json)
+    fi
+    if [ -n "$V" ]; then
+      printf '%s %s\n' "$P" "$V"
+    else
+      printf '%s %s (constraint only, not installed)\n' "$P" \
+        "$(jq -r --arg p "$P" '.dependencies[$p] // .devDependencies[$p] // "?"' package.json)"
+    fi
+  done < <(jq -r '(.dependencies // {}) + (.devDependencies // {}) | keys[]
+                  | select(test("^(vue|react|nuxt|vite|typescript|tailwindcss|@tailwindcss/.+|@inertiajs/.+|@ionic/.+)$"))' package.json)
+  # The target browsers decide which CSS / JS features are safe to plan with.
+  if [ -f .browserslistrc ]; then
+    printf 'browserslist %s\n' "$(grep -vE '^[[:space:]]*(#|$)' .browserslistrc | paste -sd ',' -)"
+  else
+    jq -r '"browserslist " + ((.browserslist // "defaults (none configured)")
+           | if type == "object" then (.production // (to_entries[0].value) // []) else . end
+           | if type == "array" then join(",") else tostring end)' package.json
+  fi
+  jq -r '"node (engines) " + (.engines.node // "?")' package.json
+fi
+if [ -f .nvmrc ]; then printf 'node (.nvmrc) %s\n' "$(cat .nvmrc)"; fi
+```
+
+A constraint printed as *"constraint only"* is a floor, not a version — plan
+only with features that floor already has. PHP's `config.platform.php` /
+`require.php` is the lowest version the code must run on, and the browserslist
+target plays the same role for CSS and JS. When the skill does **not** run
+inside the project's repository (no `composer.json`, no `package.json`), there
+are no versions — Step 6.0 then writes one generic line and never a guessed
+version number.
 
 ---
 
@@ -375,6 +760,7 @@ Inputs to your reasoning:
 - All attachment contents (downloaded + converted in Step 3.3)
 - All extra repo context files the user accepted in Step 4
 - Detected project stack from Step 4 (Laravel modular / Vue / Ionic / Nuxt / …)
+  and its installed framework versions
 
 Produce a **draft** new description with this exact structure:
 
@@ -388,6 +774,10 @@ Produce a **draft** new description with this exact structure:
 - [ ] AC 2 — …
 - [ ] AC 3 — …
 …
+
+### {cross_cutting_label}
+- [ ] only the cross-cutting criteria that apply (Step 6.0), one per line
+- [ ] …
 
 ---
 
@@ -426,6 +816,20 @@ Sections inside the technical plan:
 - Pest: …
 - Vitest / Playwright: …
 
+### {quality_label}
+Only the lines that apply (Step 6.0), each naming the concrete thing:
+- Menu: section, label, roles, and the file that registers it
+- Inbound links: parent screen → relation field / tab, action, button, breadcrumb
+- Authorization: policy class + method, gate, tenant / company scope
+- Performance: eager loads, pagination, indexes on new FK / filter / sort columns,
+  `chunkById` for batches and data migrations, the row count where it starts to hurt
+- UI/UX: the sibling screen to copy, new translation keys (module lang file,
+  `hint.<thing>` not `<thing>.hint`), disabled / empty / error / loading states
+- Framework: the installed version and the idiomatic feature of that version to
+  use for this task, one line each — e.g. *Laravel 12.28: použiť `casts()` +
+  enum cast pre `status`*, *Vue 3.5: `defineModel()` namiesto `modelValue` +
+  `emit`* — with the docs page checked when the choice is not obvious
+
 ### Open questions
 - Anything the analyst (you) could not answer with confidence — marked with
   the `[OTVORENÉ]` marker from config so the implementer treats them as
@@ -436,9 +840,104 @@ Sections inside the technical plan:
  its original heading; omitted entirely when empty}
 ```
 
-Use `{acceptance_label}` / `{goal_label}` / `{tech_label}` from
-`.analyze_skill.sections` based on the resolved language (CLI flag wins, else
-config `default_language`, fallback `sk`).
+Use `{acceptance_label}` / `{goal_label}` / `{tech_label}` /
+`{cross_cutting_label}` / `{quality_label}` from `.analyze_skill.sections` based
+on the resolved language (CLI flag wins, else config `default_language`,
+fallback `sk`). Omit the `{cross_cutting_label}` sub-heading and the
+`{quality_label}` subsection entirely when no dimension applies.
+
+### Step 6.0 — Cross-cutting requirements (four dimensions in the AC, `framework` in the plan)
+
+Acceptance criteria written from the reporter's text say what the reporter
+thought to ask for. They are silent about the menu entry nobody added, the page
+only reachable by typing its URL, the new action any tenant can trigger, and the
+list that runs one query per row. `teamwork-task-test` checks exactly these at
+QA time — its **Step 6.6** reviews the dimensions `ui_ux`, `performance`,
+`security` and `reachability` (plus `framework`, which it treats as advisory —
+see the end of this step). Writing the applicable ones into the AC here
+means the implementer builds them in the first place and the tester can tick
+them, instead of reporting them as findings afterwards.
+
+For each dimension decide whether it **applies**. If it does, add concrete,
+testable `- [ ]` criteria under `### {cross_cutting_label}` in the task's
+language. Slovak examples follow; `<…>` stands for the real name:
+
+| Dimension | Applies when the task … | Criteria (examples) |
+| --- | --- | --- |
+| `reachability` | adds, renames or removes a screen — page, route rendering a view, Nova resource / lens / dashboard / tool, SPA route | `- [ ] Nová obrazovka <X> je dostupná z menu <sekcia> pre rolu <rola>` · `- [ ] Z detailu <rodič> vedie na <X> preklik (záložka vzťahu / tlačidlo)` · on a rename or removal: `- [ ] Žiadna položka menu ani odkaz nevedie na zrušenú obrazovku <X>` |
+| `security` | adds a route, action, button, endpoint or form | `- [ ] Akciu <akcia> spustí len rola <rola> a len nad záznamami vlastnej firmy — iný používateľ dostane 403, nie chybu 500` · `- [ ] Rola bez oprávnenia položku <X> v menu nevidí a priamy prístup na jej URL dostane 403` · `- [ ] Neplatný vstup vo formulári <X> vráti validačnú chybu pri poli, nie chybu 500` |
+| `performance` | adds or changes a list, report, export, batch job or data migration | `- [ ] Zoznam <X> s <N> záznamami sa načíta do <T> s — stránkovaný, bez dotazu na každý riadok` · `- [ ] Migrácia / dávka <X> spracuje <N> záznamov po častiach, bez načítania celej tabuľky do pamäte` |
+| `ui_ux` | adds or changes UI | `- [ ] Neaktívne tlačidlo <X> ukáže dôvod (tooltip) a čítačka obrazovky ho ohlási ako neaktívne` · `- [ ] Všetky nové texty sú preložené — na obrazovke sa nezobrazí surový prekladový kľúč` · `- [ ] Prázdny zoznam aj chyba načítania <X> zobrazia zrozumiteľnú správu` · `- [ ] Zmazanie <X> vyžaduje potvrdenie` |
+
+Rules:
+
+- **Only dimensions that apply.** A pure backend task without UI gets no UI
+  criteria; a task that changes nothing a user or an attacker can reach may get
+  none at all — then omit the sub-heading and say *"cross-cutting: none
+  applicable — <reason>"* in the final report. Proportion beats boilerplate.
+- **Concrete or not at all.** Name the real menu section, role, parent screen,
+  action and data volume — take them from the repo scan (Step 4): the existing
+  menu registration, the sibling resources' policies, the parent model's
+  relations. *"Stránka je dostupná"* cannot be tested; *"Nová obrazovka Faktúry
+  je dostupná z menu Účtovníctvo pre rolu Účtovník"* can.
+- **A deliberately URL-only page** (e-mail deep link, landing page) gets a
+  criterion that says so — `- [ ] Stránka <X> je zámerne dostupná len cez odkaz
+  z e-mailu, nie z menu` — so the tester knows to put it into
+  `teamwork-task-test`'s `reachability.allow_orphans` instead of reporting it.
+- **Unknowns are clarifying questions** (Step 6.1). When the menu placement, the
+  roles or the expected data volume cannot be inferred, ask — inside the same
+  batch-of-4 / max-6 budget, never as an extra round. If the answer does not
+  come, keep the criterion and mark the unknown part with the open marker:
+  `- [ ] Nová obrazovka <X> je dostupná z menu [OTVORENÉ] pre rolu [OTVORENÉ]`.
+- **Format — the QA side depends on it.** `teamwork-task-test` extracts
+  criteria from the AC block (its Step 4.1) and ticks them by an exact `- [ ] …`
+  line match that stops at the next `---` (its Step 9.3). So the
+  `### {cross_cutting_label}` sub-heading sits **inside** the AC section, after
+  the task-specific criteria and before the `---`; every criterion is a single
+  `- [ ] …` line — no nesting, no line wrap, no `*` bullets; and there is never
+  a `---` inside the AC block.
+- **The additive contract still holds.** The cross-cutting criteria are new text
+  in the AC section below the reporter's verbatim preamble; nothing above the
+  first `---` changes. A criterion the reporter already wrote is not repeated.
+  No estimate goes here — or anywhere in the description. The preview and
+  confirmation gate in Step 6.4 cover these lines like every other.
+
+The technical plan gets the matching **`### {quality_label}`** subsection (see
+the template): a few lines that name the menu location, the inbound links, the
+policies and gates, the eager loads and indexes — the *how* behind each
+cross-cutting criterion. Only the lines that apply.
+
+**The fifth key, `framework` — plan only, never an acceptance criterion.** The
+implementer should build with the idioms and built-in features of the framework
+versions the project actually has installed, not with patterns remembered from
+older versions or hand-rolled code for something the framework ships. So the
+`{quality_label}` subsection gets a *Framework* line for each idiom that
+matters to this task, naming the installed version from Step 4 and the concrete
+feature — *"Laravel 12.28: použiť `casts()` + enum cast pre `status`"*,
+*"Nova 5: `dependsOn()` na poli `typ` namiesto vlastného JS"*, *"Tailwind 4:
+nové tokeny cez `@theme` v CSS, nie `tailwind.config.js`"*. It is **never** a
+`- [ ]` criterion: `teamwork-task-test` treats `framework` as advisory
+(recommendations only), so such a criterion could never be ticked, and the
+acceptance criteria describe behaviour, not idiom. Rules for the line:
+
+- **Versions from Step 4, idioms from current docs.** Look the feature up for
+  the installed version — Laravel Boost `search-docs` when the project has
+  `laravel/boost`, otherwise the context7 MCP (`resolve-library-id` →
+  `query-docs`), otherwise the official docs and the upgrade guide of that
+  major. Never plan with a feature newer than the installed version or the
+  browserslist target, and never with an API that version deprecates.
+- **Consistency beats novelty.** The project's `CLAUDE.md` and the conventions
+  of the sibling code win over a newer idiom; do not plan a second pattern next
+  to an established one unless the task is a refactor. No new dependency when
+  the framework already ships the capability.
+- **Only the code this task adds or changes.** No drive-by rewrites of untouched
+  code — an opportunity there is at most a line under *Out of scope*.
+- **Proportionate.** One to three lines; none when the task writes no code (a
+  pure content or configuration change).
+- **Outside the project's repository** (Step 4 found no `composer.json` and no
+  `package.json`) write one generic line instead — *"Framework: pri
+  implementácii použiť idiómy nainštalovaných verzií (overiť v `composer.lock`
+  / `package.json`)"* — and never a guessed version number.
 
 ### Step 6.1 — Gather clarifying questions
 
@@ -449,8 +948,10 @@ While producing the draft, keep a list of **clarifying questions** for which:
   comments, attachments, and the repo context.
 
 Cap the list at `.analyze_skill.clarifying_questions.max_per_run` (default 6).
-Prioritise: AC ambiguities → data model unknowns → integration points →
-UI/UX details.
+Prioritise: AC ambiguities (including the menu placement, roles and expected
+data volume a cross-cutting criterion needs — Step 6.0) → data model unknowns →
+integration points → UI/UX details. Cross-cutting questions share this budget;
+they never open an extra round.
 
 If there are zero clarifying questions, skip Step 6.2 and go straight to
 Step 6.3.
@@ -526,7 +1027,9 @@ For each subtask returned in Step 3:
      parent plan → draft an updated subtask description (same canonical
      structure) and queue it as a write proposal. Step 6.3 applies to subtasks
      too: the subtask's own preamble, its inline images and its links are copied
-     into the new description verbatim — never dropped, never reformatted.
+     into the new description verbatim — never dropped, never reformatted. So
+     does Step 6.0: the updated subtask carries the cross-cutting criteria that
+     apply to its own slice of the work.
 4. When `review_existing == true` (default), present each proposed subtask
    update via **AskUserQuestion** (`Apply` / `Edit` / `Skip`).
 
@@ -534,8 +1037,9 @@ For each subtask returned in Step 3:
 
 Only when **all** of the following are true:
 
-- The task has **no** subtasks (`hasSubtasks == false` AND `subtasks` array
-  empty).
+- The task has **no** subtasks — the Step 3.1 subtasks fetch succeeded and
+  returned an empty list. (v3 has no `hasSubtasks` key, so do not gate on it; a
+  subtasks fetch that failed means *unknown*, not *none*, and blocks the split.)
 - The proposed estimate from Step 8 exceeds `propose_split_threshold_minutes`
   (default 240).
 - The AC list contains at least `min_split_subtasks` items that fall into
@@ -545,7 +1049,10 @@ Only when **all** of the following are true:
 If so, draft a split of 2–6 atomic subtasks. Each subtask gets:
 - Name (short, business-friendly, prefixed with `[BE]` / `[FE]` / `[QA]` / …
   if the project uses role tags)
-- Its own canonical description (preamble omitted; AC + Goal + Technical plan)
+- Its own canonical description (preamble omitted; AC + Goal + Technical plan),
+  including the Step 6.0 cross-cutting criteria for **its own slice** — the menu
+  entry and inbound links go to the subtask that builds the screen, the
+  authorization criterion to the one that adds the action or endpoint
 - Its own `estimateMinutes` (use the methodology from Step 8)
 - Optional `parentTaskId` set to the current task
 
@@ -778,6 +1285,13 @@ the original is missing from `$NEW_DESC`. Record it as
 `❌ refused: would drop <n> image(s)/link(s)` in the final report and continue
 with the remaining proposals.
 
+Hold the original byte-exact for that comparison, in a file —
+`jq -j '.task.description' <<<"$BODY" > "/tmp/tw_analyze_desc_orig_${TASK_ID}.md"`
+(`$BODY` = a fresh task GET) — never `echo "$BODY" | jq`: zsh's `echo` rewrites
+every escaped newline in the JSON, and the "old text survives verbatim" check
+then runs against a corrupted copy. Not `$(jq …)` either: a command
+substitution drops the trailing newlines.
+
 ```bash
 PAYLOAD=$(jq -n --arg desc "$NEW_DESC" '{task:{description:$desc}}')
 curl -sS -u "$AUTH" -H "Content-Type: application/json" -H "Accept: application/json" \
@@ -869,6 +1383,12 @@ Project: <projectName>
   (each pair must be equal — a mismatch means the rewrite deleted something the
   reporter put into the task)
 - New sections: AC (<n> items), Goal (<n> sentences), Technical plan (<n> lines)
+- Cross-cutting criteria (Step 6.0): reachability <n> · security <n> ·
+  performance <n> · ui_ux <n> — not applicable: <dimensions> (<one-line reason>)
+- Framework (plan only): <installed versions, e.g. Laravel v12.28.1 · Vue 3.5.13>
+  — <n> idiom line(s) in the technical plan · or ⚠ versions not detected (not
+  run inside the project's repository — generic line written)
+- Comments: <n> via v3 / v1 · or ⚠ unavailable (HTTP <code>)
 - Clarifying questions asked: <n> (answered <n>, unresolved <n>)
 
 ### Subtasks
@@ -885,15 +1405,24 @@ Project: <projectName>
 - …
 
 ### Read-only tasks (tasklist mode)
-- <count> tasks were fetched and analysed read-only (not in `To Do` or not
-  assigned to me); listed below with their current state.
-  - <task title> (<id>) — <stage> — assigned to <user>
+- Start columns: <todo_stages, e.g. `Ready for Development`, `To Do`>
+- <count> tasks were fetched and analysed read-only (not in a start column,
+  not on the board, or not assigned to me); listed below with their current
+  state.
+  - <task title> (<id>) — <stage / "not on the board" / "column unresolved">
+    — assigned to <user> — 📋 read-only (<reason>)
   - …
 
 ### Links
 - Task: <BASE>/app/tasks/<id>
 - Project: <BASE>/app/projects/<projectId>
 ```
+
+`<projectId>` and `<projectName>` come from Step 3.1 (`.task.tasklist.meta.projectId`
+and `.included.projects["<projectId>"].name`). Up to 1.2.0 they were read from
+`.task.projectId`, which v3 does not return, so the project link came out as
+`/app/projects/null`. If the id is still empty, print `Project: ⚠ unknown`
+rather than a broken link.
 
 For tasklist URLs, render one block per task (eligible + read-only), in the
 same order the API returned them.
@@ -914,6 +1443,9 @@ Continue with a recorded failure on:
 - HTTP 4xx/5xx on individual writes in Step 9 (per-proposal failure)
 - Missing converter for a single attachment in Step 3.3
 - Empty local context discovery in Step 4 (just skip the question)
+- A secondary fetch that fails on every endpoint (comments, subtasks, workflow
+  stages) — the analysis goes on, and the report names the gap as *"unavailable"*
+  rather than presenting it as *"none"*
 
 Never:
 

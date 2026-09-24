@@ -4,6 +4,183 @@ All notable changes to the `teamwork-task-analyze` plugin are documented in
 this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-09-24
+
+### Added
+- **Cross-cutting acceptance criteria (new Step 6.0).** A rewritten AC list
+  covered what the reporter asked for and nothing else. It stayed silent about
+  the menu entry nobody added, the page only reachable by typing its URL, the
+  new action any tenant can trigger, and the list that runs one query per row.
+  `teamwork-task-test` has checked exactly these four dimensions (`ui_ux`,
+  `performance`, `security`, `reachability`) at QA time since its Step 6.6. The
+  analyst now writes the applicable ones into the AC section beforehand,
+  under a `### Prierezové požiadavky` sub-heading. Each is a concrete, testable
+  `- [ ]` line in the task's language, e.g. *"Nová obrazovka X je dostupná z
+  menu <sekcia> pre rolu <rola>"* or *"Z detailu <rodič> vedie na X preklik"*.
+  That way they are built in the first place instead of being reported as
+  findings afterwards.
+  - Only dimensions that apply. A backend-only task gets no UI boilerplate,
+    and a task with none applicable says so in the final report.
+  - Unknown menu placement, roles or data volume become clarifying questions
+    inside the existing batch-of-4 / max-6 budget. An unanswered one stays in
+    the criterion as `[OTVORENÉ]`.
+  - A deliberately URL-only page gets a criterion that says so, so the tester
+    puts it into `allow_orphans` instead of reporting it as an orphan.
+  - The format is pinned to what the QA side parses: the sub-heading sits
+    inside the AC block, there is one `- [ ]` per line, and there is no `---`
+    inside the block. `teamwork-task-test` extracts and ticks criteria by exact
+    line match up to the next `---`.
+  - Split and updated subtasks carry the criteria for their own slice.
+- **Quality subsection in the technical plan.** It names the concrete menu
+  location, the inbound links, the policies and gates, and the eager loads,
+  indexes and batch sizes. This is the *how* behind each cross-cutting
+  criterion.
+- **`framework` — the fifth key, in the technical plan only.** An implementer
+  who plans from memory reaches for the patterns of older framework versions,
+  or hand-rolls what the installed version already ships. When the skill runs
+  inside the project's repository, Step 4 now reads the versions actually
+  installed — `composer.lock` or `vendor/composer/installed.json` (Laravel,
+  Nova, Livewire, Inertia, Pest, the PHP floor from `composer.json`),
+  `node_modules` or `package-lock.json` (Vue, React, Nuxt, Vite, TypeScript,
+  Tailwind, Inertia, Ionic), browserslist, `.nvmrc` / `engines` — or takes them
+  from Laravel Boost's `application-info`. A bare manifest constraint is
+  printed as one and planned against as a floor. The quality subsection
+  then names the version and the idiomatic feature to use for this task, e.g.
+  *"Laravel 12.28: použiť `casts()` + enum cast pre `status`"*, checked in
+  current docs (Boost `search-docs`, else context7, else the official docs).
+  - It is **never an acceptance criterion.** `teamwork-task-test` treats
+    `framework` as advisory — recommendations only — so a criterion about an
+    idiom could never be ticked, and the AC list describes behaviour.
+  - Guardrails: the project's `CLAUDE.md` and the sibling code's conventions
+    win over a newer idiom; nothing newer than the installed version or the
+    browserslist target and nothing that version deprecates; only code the task
+    adds or changes; one to three lines.
+  - Outside the project's repository the skill writes one generic line and
+    never a guessed version number. The final report says which versions were
+    detected, or that none were.
+- New config labels `sections.cross_cutting_label_sk/en` and
+  `sections.quality_label_sk/en` — the quality label enumerates all five keys:
+  *"Kvalita (UI/UX, výkon, bezpečnosť, dostupnosť, framework)"* /
+  *"Quality (UI/UX, performance, security, reachability, framework)"*. They get
+  per-key defaults, because the whole-object default of `sections` never
+  touches a file that already has one; a label the user already set is kept.
+- A **shell portability contract** at the top of `SKILL.md`. The skill runs in
+  zsh on macOS, and the note lists the rules below so a later edit does not
+  bring them back.
+- **Start columns for the new WAME board (`tasklist_filter.todo_stages`).** On
+  the shared board (Teamwork workflow "WAME workflow", ~49 projects) work
+  starts in two columns: *Ready for Development* and *To Do*. The filter only
+  knew the single column `todo_stage: "To Do"`, so a task waiting in *Ready
+  for Development* was listed read-only and never got its description
+  rewritten. A task is now eligible for write-back when its column is **any** of
+  `todo_stages` (default `["Ready for Development", "To Do"]`, still matched
+  case-sensitively per `todo_stage_match_mode`). An older per-project board
+  that has only `To Do` keeps matching. The legacy string `todo_stage` is
+  still read when `todo_stages` is absent or empty. The report names the
+  configured start columns instead of a hard-coded "To Do".
+  - The config merge adds `todo_stages` **only when it is absent** (or null), with
+    exactly the rule `teamwork-task` 1.5.0 applies to the same shared key. The
+    two plugins write one file, so neither may undo what the other did: an
+    untouched `todo_stage: "To Do"` (or no value) becomes the default pair,
+    and a customised `"Backlog"` becomes `["Backlog"]`. An existing
+    `todo_stages` is never rewritten, and the legacy key stays. For the
+    user's live config (`todo_stage: "To Do"`) the result is
+    `["Ready for Development", "To Do"]`. `board_workflow` is not touched,
+    because this plugin never moves a card.
+  - Verified read-only on tasklist 3365378 (project 589836, "WAME workflow"):
+    its 10 tasks in *Ready for Development* were read-only under the old
+    single-column filter and are eligible with the new default. The *To Do*
+    tasks on project 736882 and on the older board of project 700336 (workflow
+    "Default workflow (Copy #1)") match as before.
+
+### Fixed
+The first three entries are defects from a colleague's "Štyri cesty k nule"
+analysis. Each of them, alone, made the analysis run on **no comments** without
+a single error. All of them were re-verified with read-only GETs against a
+completed task that has 8 comments.
+- **Comments were never fetched.** Step 3.1 fetched them only
+  `If commentsCount > 0`, and v3 task objects have no `commentsCount` key, so
+  the gate never opened. The reporter's clarifications in the comments never
+  reached the rewrite. Comments are now always fetched.
+  *Repro:* `jq '.task.commentsCount' <<<"$(curl … /projects/api/v3/tasks/45198800.json)"`
+  → `null` on a task with 8 comments.
+- **The comments request was invalid.** `orderBy=postedAt` is answered with
+  **HTTP 400** `orderBy: unknown comment sort.`. It now uses
+  `orderBy=date&orderMode=asc`, checks the HTTP status inline and prints a `⚠`
+  naming the endpoint. When v3 refuses, it falls back to the v1
+  `GET /tasks/{id}/comments.json` (sorted by `datetime`) with a field map to the
+  v3 names. When both fail, the report says *"comments unavailable"*, never
+  *"no comments"*.
+  *Repro:* `curl -w '%{http_code}' …/tasks/45198800/comments.json?orderBy=postedAt` → `400`.
+- **Wrong comment fields.** The documented fields were `postedAt` and `author`,
+  and neither exists. They are now `postedDateTime` and `postedByUserId`, with
+  names via `include=users`, plus `htmlBody` and `files[]`. "The latest comment
+  wins" needs a timestamp that is actually there.
+- **The project link in the final report was broken.** Step 3.1 read
+  `projectId`, which v3 does not return, so the link came out as
+  `/app/projects/null`. It now reads `.projectId // .tasklist.meta.projectId`,
+  takes the project name from `.included.projects`, and names only fields v3
+  really returns (`dueDate`, not `dueAt`; no `commentsCount`, no `hasSubtasks`).
+- **The tasklist filter could never mark a task eligible.** It resolved the
+  board column via `.cardId` → `included.cards` → `included.stages` from
+  `?include=cards,stages`. On the live API `cardId` is `null` and that
+  `included` is empty, so every task in a tasklist was silently listed
+  read-only. The column now comes from `.workflowStages[0].stageId` against
+  `GET /workflows.json?projectIds=<id>&include=stages`. The current user comes
+  from `me.json` → `.person.id`. The snippet now computes the verdict itself
+  and records a reason for every read-only task:
+  - A task **off the board** (`stageId` `0`) is never eligible. Only the
+    configured start columns are, and the task is reported as *"not on the
+    board"*.
+  - A task on a board whose column cannot be named, because the workflows GET
+    failed or the project id is unknown, is reported as *"column unresolved"*
+    (fail closed). An empty project id is no longer sent as `projectIds=`,
+    which answers 200 with the whole workspace's workflows.
+  - `only_assigned_to_me: false` is honoured. A `jq '… // true'` would have
+    read the explicit `false` as `true`.
+  - When the tasklist GET gives no project id, it is taken from the tasks'
+    `.tasklist.meta.projectId` instead of leaving every column unresolved.
+  - A `tasklist_filter` block without an `enabled` key counts as enabled, the
+    same reading as `teamwork-task`. It used to switch the filter off.
+  *Repro:* `jq '.tasks[0].cardId' <<<"$(curl …/tasklists/3361804/tasks.json?include=cards,stages)"`
+  → `null`, `.included` → `{}`.
+- **Task attachments came from an endpoint that does not exist.**
+  `GET /projects/api/v3/tasks/{id}/attachments.json` answers **404**. Attachment
+  metadata (`originalName`, `size`, `downloadURL`) now comes from the task fetch
+  with `include=attachments` → `.included.files`. Comment files resolve via
+  `GET /projects/api/v3/files/{id}.json`.
+- **The split proposal gated on `hasSubtasks == false`**, a key v3 does not
+  return. Step 7.2 now trusts the subtasks fetch. A failed fetch means
+  *unknown*, which blocks the split instead of proposing to split a task that
+  already is split.
+- **The subtasks fallback returned unrelated tasks.** When `/subtasks.json` was
+  unavailable, Step 3.1 fell back to `tasks.json?parentTaskIds=<id>`. v3 ignores
+  that parameter and answers with the first 100 tasks of the whole site, which
+  the review would then have treated as subtasks. The fallback now uses
+  `parentTaskId` (singular), and both results are filtered on `.parentTaskId`
+  before anything counts as a subtask. The snippet now also runs the inline
+  status check that it used to only describe.
+  *Repro:* `jq '[.tasks[].parentTaskId] | unique' <<<"$(curl …/projects/api/v3/tasks.json?parentTaskIds=45379220)"`
+  → unrelated parent ids (`0` among them) and `hasMore: true`; with
+  `parentTaskId=` → only `45379220`.
+- **`fetch_attachments: false` / `fetch_comment_files: false` did not stick.**
+  Step 2.5 defaulted both with `//=`, which replaces `false` as well as `null`,
+  so every run switched attachment downloads back on. They now default only
+  when absent.
+  *Repro:* `jq -n '{fetch_attachments: false} | .fetch_attachments //= true'` →
+  `{"fetch_attachments": true}`.
+- **zsh sweep.** Secondary fetches (comments, subtasks, workflows, files) now
+  check their HTTP status and name the gap as *unavailable*. They no longer
+  stop the run or pass silently as empty. The Step 9.1 "original survives
+  verbatim" check takes the original byte-exact with `jq -j … <<<"$BODY"`, not
+  through `echo`, which rewrites escaped newlines. The cleanup path is quoted,
+  and the scratch files are removed with `find … -delete` rather than a bare
+  glob, which zsh rejects when nothing matches.
+
+### Changed
+- README: the estimate step names `wame-estimate-v2`, and the write list says
+  the estimate goes through the classic v1 PUT. Both were left over from 1.1.0.
+
 ## [1.2.0] — 2026-09-22
 
 ### Fixed

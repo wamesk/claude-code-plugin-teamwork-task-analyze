@@ -15,6 +15,10 @@
       "goal_label_en": "Goal",
       "tech_label_sk": "Technický popis",
       "tech_label_en": "Technical plan",
+      "cross_cutting_label_sk": "Prierezové požiadavky",
+      "cross_cutting_label_en": "Cross-cutting requirements",
+      "quality_label_sk": "Kvalita (UI/UX, výkon, bezpečnosť, dostupnosť, framework)",
+      "quality_label_en": "Quality (UI/UX, performance, security, reachability, framework)",
       "hr_marker": "---"
     },
     "estimate": {
@@ -58,7 +62,10 @@
   },
   "tasklist_filter": {
     "enabled": true,
-    "todo_stage": "To Do",
+    "todo_stages": [
+      "Ready for Development",
+      "To Do"
+    ],
     "todo_stage_match_mode": "case_sensitive",
     "only_assigned_to_me": true,
     "analyze_all_tasks": true,
