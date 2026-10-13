@@ -1053,8 +1053,17 @@ If so, draft a split of 2–6 atomic subtasks. Each subtask gets:
   including the Step 6.0 cross-cutting criteria for **its own slice** — the menu
   entry and inbound links go to the subtask that builds the screen, the
   authorization criterion to the one that adds the action or endpoint
-- Its own `estimateMinutes` (use the methodology from Step 8)
+- Its own estimate (use the methodology from Step 8), written on the POST as
+  `estimatedMinutes` — the v3 **write** field; `estimateMinutes` is the read
+  field and lands as 0 on a POST
 - Optional `parentTaskId` set to the current task
+
+**When the split is applied, the parent's own estimate goes to 0.** Teamwork rolls
+subtask estimates up into the parent's `accumulatedEstimatedMinutes` and adds the
+parent's own field on top; a parent that keeps the total reports the work twice
+(`estimateMinutes: 480` + four subtasks = `accumulatedEstimatedMinutes: 960`,
+observed 2026-10-08). Step 8 then sizes the subtasks, and Step 9.2 PUTs `0` on
+the parent.
 
 Show the split as a numbered list with each subtask's name + estimate +
 1-line goal. Ask via **AskUserQuestion**:
@@ -1088,6 +1097,17 @@ through the estimate field — Step 9.2 for the task, `estimateMinutes` on a new
 subtask in Step 9.4 — that is the whole of its life.
 
 ### Step 8.1 — Compare with the existing estimate
+
+The task's *own* field is `task.estimateMinutes`; with subtasks Teamwork also
+returns `task.accumulatedEstimatedMinutes` = own field + every subtask. When the
+Step 3.1 subtasks fetch returned at least one subtask:
+
+- compare your proposal against `accumulatedEstimatedMinutes`, not the own field;
+- if the own field is `> 0` while the subtasks carry estimates, the parent is
+  double-counted — queue a "zero the parent estimate" proposal (Step 9.2 with
+  `0`) regardless of the divergence check below.
+
+Without subtasks:
 
 - If `task.estimateMinutes` is `0` or `null` → queue a "set estimate" proposal
   with your value (preview + `AskUserQuestion` `Apply` / `Edit` / `Skip` in
@@ -1309,6 +1329,9 @@ curl -sS -u "$AUTH" -H "Content-Type: application/json" -H "Accept: application/
 > estimate is the one field in this skill that must go through the classic v1
 > endpoint. (Descriptions and subtask creation are fine on v3 — see 9.1, 9.3, 9.4.)
 
+`NEW_ESTIMATE_MIN` is `0` when the task has (or just received) subtasks — the
+subtasks carry the estimate and Teamwork rolls it up (Step 7 / Step 8.1).
+
 ```bash
 PAYLOAD=$(jq -n --arg m "$NEW_ESTIMATE_MIN" \
   '{"todo-item":{"estimated-minutes":($m|tonumber)}}')
@@ -1345,7 +1368,7 @@ PAYLOAD=$(jq -n \
       name: $name,
       description: $desc,
       parentTaskId: ($parent|tonumber),
-      estimateMinutes: ($est|tonumber)
+      estimatedMinutes: ($est|tonumber)
     }
   }')
 curl -sS -u "$AUTH" -H "Content-Type: application/json" -H "Accept: application/json" \
@@ -1355,6 +1378,13 @@ curl -sS -u "$AUTH" -H "Content-Type: application/json" -H "Accept: application/
 ```
 
 (`TASKLIST_ID` is the parent task's `tasklistId` from Step 3.)
+
+`estimatedMinutes` — with the `d` — is the v3 **write** field. Until 1.3.1 this
+payload sent `estimateMinutes` (the read field): HTTP 201, subtask created, and
+its estimate silently `0`. Read it back (`.task.estimateMinutes` on the new id)
+before reporting the split as applied, and after the last subtask check the
+parent: `.task.estimateMinutes` must be `0` and `.task.accumulatedEstimatedMinutes`
+the sum of the subtasks.
 
 ### 9.5 Failures
 

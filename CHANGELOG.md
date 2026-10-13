@@ -4,6 +4,27 @@ All notable changes to the `teamwork-task-analyze` plugin are documented in
 this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] — 2026-10-13
+
+Written on 2026-10-08 as 1.3.1 in a separate checkout and never published; 1.3.1
+was released from here with the description fix instead, so the estimate fix
+ships now as 1.3.2.
+
+### Fixed
+- **A subtask created by the split flow had no estimate.** Step 9.4 posted
+  `estimateMinutes` — the v3 *read* field. The POST answered 201 and the
+  estimate landed as `0`, the same silent no-op 1.3.0 documented for the
+  estimate PATCH. The payload now sends `estimatedMinutes` and the value is read
+  back before the split is reported as applied.
+- **The parent kept its estimate after a split, so the work counted twice.**
+  Teamwork rolls subtask estimates up into the parent's
+  `accumulatedEstimatedMinutes` and adds the parent's own field on top. Step 7
+  now sets the parent to `0` through Step 9.2 when the split is applied, and
+  Step 8.1 compares the proposal against `accumulatedEstimatedMinutes` on a task
+  that already has subtasks — a parent with its own number next to estimated
+  subtasks is flagged as double-counted and a "zero the parent" proposal is
+  queued.
+
 ## [1.3.1] — 2026-10-12
 
 ### Changed
