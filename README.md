@@ -65,7 +65,7 @@ Optional flags:
    without subtasks **and** with naturally separable AC, proposes a split
    into 2–6 atomic subtasks (never forces a split for small tasks).
 7. **Checks the estimate** using the WAME estimate methodology
-   `wame-estimate-v2`. Sets one when missing; warns + asks before overwriting a
+   `wame-estimate-v3`. Sets one when missing; warns + asks before overwriting a
    diverging existing value.
 
 Every Teamwork write (PATCH description, PUT estimate via the classic v1
