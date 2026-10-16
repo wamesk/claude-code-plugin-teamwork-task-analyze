@@ -17,6 +17,8 @@ single follow-up question.
 /plugin install teamwork-task-analyze@wame
 ```
 
+The plugin requires the `work-rules` plugin (skill `wame-estimate`, the estimate methodology `wame-estimate-v3`). It is declared in `dependencies`, so it installs together with this plugin; if it is missing, run `/plugin install work-rules@wame`.
+
 The Teamwork API token is shared with the `teamwork-task` and
 `teamwork-task-test` plugins — if one of those is already configured, this
 plugin uses the same token. On first run otherwise the skill prompts for the
@@ -65,7 +67,7 @@ Optional flags:
    without subtasks **and** with naturally separable AC, proposes a split
    into 2–6 atomic subtasks (never forces a split for small tasks).
 7. **Checks the estimate** using the WAME estimate methodology
-   `wame-estimate-v3`. Sets one when missing; warns + asks before overwriting a
+   `wame-estimate-v3` (from the `work-rules` plugin). Sets one when missing; warns + asks before overwriting a
    diverging existing value.
 
 Every Teamwork write (PATCH description, PUT estimate via the classic v1
